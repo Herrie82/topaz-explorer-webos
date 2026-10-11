@@ -37,6 +37,9 @@ var KID_CHECKS = 400;      // entries looked at to learn whether a folder has fo
 // file to be marked as a program: installing a package does not keep that mark.
 var SEVENZ = "/media/cryptofs/apps/usr/palm/services/com.palm.stark.files.service/bin/7za";
 var LOADER = "/lib/ld-linux.so.3";
+// The biggest a single file can be on the TouchPad's storage (FAT32): 4 GB less
+// one byte. An archive that would pass this, or a file inside one, is refused.
+var FAT32MAX = 4294967295;
 // Tar archives that are also compressed: unpacked in two stages.
 var PACKED_TAR = /\.(tar\.(gz|bz2|xz|z)|tgz|tbz2?|txz)$/i;
 var LIVE = ["/proc", "/sys", "/dev"];
@@ -608,6 +611,8 @@ function snapshot() {
 		bytes: job.bytes, doneBytes: job.doneBytes,
 		things: job.things, doneThings: job.doneThings,   // files and folders, all the way down
 		items: job.items, doneItems: job.doneItems,
+		percent: job.percent || 0,               // 7za's own 0-100 for archives
+		started: job.started || 0,               // when work began, for an estimate
 		current: job.current,
 		failed: job.failed,                      // how many things could not be done
 		firstError: job.firstError,
@@ -627,6 +632,10 @@ function jobError(path, why) {
 function finish() {
 	job.finished = true;
 	job.current = "";
+	if (job.sizeWatch) {
+		clearInterval(job.sizeWatch);
+		job.sizeWatch = null;
+	}
 	if (keepAwake) {
 		clearInterval(keepAwake);
 		keepAwake = null;
@@ -1028,7 +1037,9 @@ function sevenZip(argLists, cwd, onLine, done) {
 		});
 	}
 	last.stdout.on("data", function(d) {
-		var lines = (left + d.toString()).split("\n");
+		// 7za writes its running percentage with carriage returns, so split on
+		// those too or the progress never reaches onLine until a newline.
+		var lines = (left + d.toString()).split(/\r\n|\r|\n/);
 		left = lines.pop();
 		for (var n = 0; n < lines.length; n++) {
 			line(lines[n]);
@@ -1100,7 +1111,7 @@ function startArchive(future, args, op) {
 		job = {
 			id: ++jobCount, op: op, finished: false, cancelled: false, stage: "counting",
 			bytes: 0, doneBytes: 0, things: 0, doneThings: 0, items: 1, doneItems: 0, current: nameOf(archive),
-			failed: 0, firstError: "", sizes: {}, steps: steps
+			percent: 0, started: 0, failed: 0, firstError: "", sizes: {}, steps: steps
 		};
 		stayAwake();
 		log("extract started: " + archive + " to " + target);
@@ -1109,13 +1120,32 @@ function startArchive(future, args, op) {
 		if (!packedTar) {
 			steps.push(function(next) {
 				var n = 0;
+				var biggest = 0;
 				sevenZip([["l", "-slt"].concat(pw, [archive])], "/", function(text) {
 					if (/^Path = /.test(text)) {
 						n++;
 					}
+					var sm = /^Size = (\d+)/.exec(text);
+					if (sm) {
+						var sz = parseInt(sm[1], 10);
+						if (sz > biggest) {
+							biggest = sz;
+						}
+					}
 				}, function(code, errors) {
 					// The first Path line is the archive itself.
 					job.things = Math.max(0, n - 1);
+					if (biggest > FAT32MAX && !job.cancelled) {
+						// FAT32 cannot hold a file over 4 GB, so it would fail part way.
+						job.failed = 1;
+						job.note = "Something inside is over 4 GB, which is too big for the TouchPad's storage. It was not extracted.";
+						steps.length = 0;
+						if (folder) {
+							try { fs.rmdirSync(target); } catch (e5) {}
+						}
+						next();
+						return;
+					}
 					if (code >= 2 && !job.cancelled) {
 						job.failed = 1;
 						job.note = archiveNote(code, errors, "extracted");
@@ -1131,11 +1161,14 @@ function startArchive(future, args, op) {
 		}
 		steps.push(function(next) {
 			job.stage = "working";
+			job.started = new Date().getTime();
 			var out = ["-y", "-aou", "-bb1", "-bso1", "-bsp0", "-o" + target];
 			var lists = packedTar ?
 				[["x", "-y", "-so"].concat(pw, [archive]), ["x", "-si", "-ttar"].concat(out)] :
 				[["x"].concat(out, pw, [archive])];
 			sevenZip(lists, "/", function(text) {
+				// Each file prints "- name" as it comes out; that streams, so the
+				// count climbs in real time even though the percentage would not.
 				if (text.substring(0, 2) === "- ") {
 					job.doneThings++;
 					job.current = nameOf("/" + text.substring(2));
@@ -1197,7 +1230,7 @@ function startArchive(future, args, op) {
 		job = {
 			id: ++jobCount, op: op, finished: false, cancelled: false, stage: "counting",
 			bytes: 0, doneBytes: 0, things: 0, doneThings: 0, items: items.length, doneItems: 0, current: "",
-			failed: 0, firstError: "", sizes: {}, steps: steps
+			percent: 0, started: 0, failed: 0, firstError: "", sizes: {}, steps: steps
 		};
 		stayAwake();
 		log("pack started: " + items.length + " item(s) into " + made);
@@ -1206,14 +1239,35 @@ function startArchive(future, args, op) {
 		}
 		steps.push(function(next) {
 			job.stage = "working";
+			job.started = new Date().getTime();
+			if (job.bytes > FAT32MAX) {
+				// Even stored, this would make a file too big for FAT32.
+				job.failed = 1;
+				job.note = "That is over 4 GB, too big for a single file on the TouchPad's storage. Nothing was made.";
+				next();
+				return;
+			}
 			// The names are given relative to their folder, so the archive holds
 			// them without the path that leads there.
+			// The percentage 7za can print does not reach us until the end (it is
+			// one long line with no break), so follow the archive's own growing
+			// size instead: that moves in real time, however slow the packing.
+			job.sizeWatch = setInterval(function() {
+				try {
+					var sz = fs.statSync(made).size;
+					job.doneBytes = sz > job.bytes ? job.bytes : sz;
+				} catch (eSize) {}
+			}, 500);
 			sevenZip([["a", "-t" + kind, "-y", "-bb1", "-bso1", "-bsp0", made, "--"].concat(names)], from, function(text) {
 				if (text.substring(0, 2) === "+ ") {
 					job.doneThings++;
 					job.current = nameOf("/" + text.substring(2));
 				}
 			}, function(code, errors) {
+				if (job.sizeWatch) {
+					clearInterval(job.sizeWatch);
+					job.sizeWatch = null;
+				}
 				if (job.cancelled || code >= 2) {
 					// Half an archive is no use to anyone.
 					try { fs.unlinkSync(made); } catch (e3) {}

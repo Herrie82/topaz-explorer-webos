@@ -205,6 +205,21 @@ FM.count = function(n, one, many) {
 	return n + " " + (n === 1 ? one : (many || one + "s"));
 };
 
+// A rough length of time from milliseconds: "about 40 sec", "about 3 min".
+FM.duration = function(ms) {
+	var sec = Math.round(ms / 1000);
+	if (sec < 60) {
+		return "about " + Math.max(1, sec) + " sec";
+	}
+	var min = Math.round(sec / 60);
+	if (min < 60) {
+		return "about " + FM.count(min, "min", "min");
+	}
+	var hr = Math.floor(min / 60);
+	var rem = min % 60;
+	return "about " + FM.count(hr, "hour") + (rem ? " " + rem + " min" : "");
+};
+
 // ---- settings ----
 
 FM.pref = function(key, fallback) {

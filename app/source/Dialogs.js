@@ -152,6 +152,30 @@ enyo.kind({
 			this.$.how.setContent(s.things ? FM.count(s.things, "item") + " so far" : "");
 			return;
 		}
+		// Archives: compressing follows the new file's growing size, extracting
+		// counts files as they come out. Both move in real time; show how far
+		// along and roughly how long is left (compressing can be slow).
+		if (s.op === "pack" || s.op === "extract") {
+			var frac = (s.bytes && s.doneBytes) ? s.doneBytes / s.bytes :
+				(s.things ? s.doneThings / s.things : 0);
+			this.$.bar.setPosition(Math.max(0, Math.min(100, Math.round(frac * 100))));
+			this.$.what.setContent(s.current || "…");
+			// Compressing follows the archive's size (the file count lags behind,
+			// so leading with it would look stuck); extracting counts files.
+			var line;
+			if (s.op === "pack" && s.bytes) {
+				line = FM.size(s.doneBytes) + " of " + FM.size(s.bytes);
+			} else {
+				line = s.things ? s.doneThings + " of " + FM.count(s.things, "item") :
+					(s.doneThings ? FM.count(s.doneThings, "item") + " so far" : "working…");
+			}
+			var left = this.timeLeft(s, frac);
+			if (left) {
+				line += "  ·  " + left;
+			}
+			this.$.how.setContent(line);
+			return;
+		}
 		// By size where sizes are known (a copy), else by how many things are done.
 		if (!s.things && s.doneThings) {
 			// An archive whose size is not known until it has been gone through.
@@ -168,6 +192,18 @@ enyo.kind({
 			how += "  ·  " + FM.size(s.doneBytes) + " of " + FM.size(s.bytes);
 		}
 		this.$.how.setContent(how);
+	},
+
+	// How much longer, from how far along (0-1) and the time spent so far.
+	timeLeft: function(s, frac) {
+		if (!s.started || !frac || frac < 0.03) {
+			return "";
+		}
+		var elapsed = new Date().getTime() - s.started;
+		if (elapsed < 2000) {
+			return "";
+		}
+		return FM.duration(elapsed * (1 - frac) / frac) + " left";
 	},
 
 	cancelClick: function() {
