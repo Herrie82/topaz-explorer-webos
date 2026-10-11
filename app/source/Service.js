@@ -24,6 +24,11 @@ enyo.kind({
 		this.send(this.$.apps, "open", {target: "file://" + path}, callback);
 	},
 
+	// Start an app with launch parameters.
+	launchApp: function(id, params, callback) {
+		this.send(this.$.apps, "launch", {id: id, params: params}, callback);
+	},
+
 	send: function(service, method, params, callback) {
 		if (!window.PalmSystem) {
 			callback({ok: false, error: "This only works on a webOS device."});

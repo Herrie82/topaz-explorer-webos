@@ -20,6 +20,6 @@ cmd /c "palm-install.bat -d usb $($ipk.Name) 2>&1" | Select-Object -Last 1
 cmd /c "palm-launch.bat -d usb -c com.palm.stark.files 2>&1" | Out-Null
 # Installing does not restart a service that is running; stop it so the new code is used.
 . (Join-Path $PSScriptRoot "tp-tools.ps1")
-Invoke-Tp 'for p in $(ps aux | grep "com.palm.stark.files.service.js" | grep -v grep | awk "{print \$2}"); do kill $p; done' | Out-Null
+Invoke-Tp 'for p in $(ps aux | grep "com.palm.stark.files.service.js" | grep -v grep | awk "{print \$2}"); do kill $p; done; sync' | Out-Null
 cmd /c "palm-launch.bat -d usb com.palm.stark.files 2>&1" | Select-Object -Last 1
 Pop-Location

@@ -325,6 +325,10 @@ enyo.kind({
 			this.askExtract(e);
 			return;
 		}
+		if (e.ext === "ipk") {
+			this.installPackage(e);
+			return;
+		}
 		var self = this;
 		this.$.svc.openFile(e.path, function(r) {
 			if (!r.ok) {
@@ -390,13 +394,26 @@ enyo.kind({
 		});
 	},
 
+	// A package: hand it to Preware, which installs them. (The system refuses a
+	// plain "open" of a package from an app: "Unauthorized call to open an ipk".)
+	installPackage: function(e) {
+		this.$.svc.launchApp("org.webosinternals.preware", {target: "file://" + e.path}, function(r) {
+			if (!r.ok) {
+				FM.log("preware: " + enyo.json.stringify(r.raw || r.error));
+				FM.banner("Preware is needed to install packages");
+			}
+		});
+	},
+
 	// Open a file in the text editor. lastResort: nothing else would open it, so
 	// a file that is not text gets the plain "no app" answer.
 	editText: function(e, lastResort) {
 		var self = this;
 		this.$.svc.ask("read", {path: e.path}, function(r) {
 			if (!r.ok) {
-				FM.banner(lastResort && r.binary ?
+				// Tried only because nothing else would take it: say that, not why
+				// it is no good as text.
+				FM.banner(lastResort ?
 					(e.ext ? "No app here opens ." + e.ext + " files" : "No app here opens this file") : r.error);
 				return;
 			}
