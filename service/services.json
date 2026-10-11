@@ -1,0 +1,26 @@
+{
+	"id": "com.palm.stark.files.service",
+	"description": "Lists, copies, moves and deletes files for the Files app",
+	"engine": "node",
+	"activityTimeout": 120,
+	"services": [
+		{
+			"name": "com.palm.stark.files.service",
+			"globalized": false,
+			"commands": [
+				{ "name": "list", "assistant": "listAssistant", "public": true },
+				{ "name": "search", "assistant": "searchAssistant", "public": true },
+				{ "name": "details", "assistant": "detailsAssistant", "public": true },
+				{ "name": "space", "assistant": "spaceAssistant", "public": true },
+				{ "name": "read", "assistant": "readAssistant", "public": true },
+				{ "name": "write", "assistant": "writeAssistant", "public": true },
+				{ "name": "mkdir", "assistant": "mkdirAssistant", "public": true },
+				{ "name": "rename", "assistant": "renameAssistant", "public": true },
+				{ "name": "unlock", "assistant": "unlockAssistant", "public": true },
+				{ "name": "start", "assistant": "startAssistant", "public": true },
+				{ "name": "status", "assistant": "statusAssistant", "public": true },
+				{ "name": "cancel", "assistant": "cancelAssistant", "public": true }
+			]
+		}
+	]
+}

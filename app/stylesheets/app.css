@@ -1,0 +1,488 @@
+/* Files. Dark bars top and bottom in the TouchPad's own style, and between
+   them a folder tree and a file list laid out like a desktop file manager. */
+
+.fm-app {
+	background: #fff;
+	color: #333;
+}
+
+.fm-one-line {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ---- bars ---- */
+
+.fm-top, .fm-bottom {
+	height: 54px;
+	padding: 0 6px;
+	background: #343434;
+	background: -webkit-gradient(linear, left top, left bottom, from(#4d4d4d), to(#2b2b2b));
+	border-bottom: 1px solid #111;
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+}
+
+.fm-bottom {
+	border-bottom: none;
+	border-top: 1px solid #111;
+}
+
+.fm-bottom-selecting {
+	background: #1f4e79;
+	background: -webkit-gradient(linear, left top, left bottom, from(#2f6ea8), to(#1b446b));
+}
+
+/* Changes to system files are allowed here. */
+.fm-bottom-system {
+	background: #7a1f1f;
+	background: -webkit-gradient(linear, left top, left bottom, from(#a83232), to(#6b1b1b));
+}
+
+.fm-status {
+	color: #e4e4e4;
+	font-size: 14px;
+	text-align: center;
+	padding: 0 10px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fm-nav {
+	min-width: 0;
+	padding-left: 10px;
+	padding-right: 10px;
+}
+
+.fm-nav .enyo-button-icon {
+	width: 24px;
+	height: 24px;
+	background-position: center center;
+}
+
+/* The path, as folders to tap. */
+.fm-crumbs {
+	height: 36px;
+	margin: 0 8px;
+	padding: 0 4px;
+	overflow: hidden;
+	background: #fafafa;
+	border: 1px solid #111;
+	border-radius: 4px;
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+}
+
+.fm-crumb {
+	padding: 0 8px;
+	line-height: 34px;
+	font-size: 16px;
+	max-width: 210px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fm-crumb-here {
+	font-weight: bold;
+}
+
+.fm-crumb-gap {
+	width: 0;
+	height: 0;
+	border-top: 5px solid transparent;
+	border-bottom: 5px solid transparent;
+	border-left: 6px solid #999;
+}
+
+.fm-search {
+	width: 210px;
+}
+
+/* ---- folder tree (left) ---- */
+
+.fm-tree {
+	width: 250px;
+	background: #f4f5f7;
+	border-right: 1px solid #c8c8c8;
+}
+
+.fm-tree-row {
+	height: 42px;
+	padding: 0 6px 0 2px;
+	border: none;
+	font-size: 16px;
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+}
+
+.fm-tree-current {
+	background: #cfe2f3;
+}
+
+/* overflow: hidden keeps the arrow's margin inside the box. */
+.fm-arrow-box {
+	width: 32px;
+	height: 42px;
+	overflow: hidden;
+}
+
+.fm-arrow {
+	width: 0;
+	height: 0;
+}
+
+.fm-arrow-shut {
+	margin: 15px 0 0 13px;
+	border-top: 6px solid transparent;
+	border-bottom: 6px solid transparent;
+	border-left: 8px solid #777;
+}
+
+.fm-arrow-open {
+	margin: 18px 0 0 10px;
+	border-left: 6px solid transparent;
+	border-right: 6px solid transparent;
+	border-top: 8px solid #777;
+}
+
+.fm-tree-icon {
+	width: 24px;
+	height: 24px;
+	margin-right: 8px;
+	background: url(../images/folder.png) center center no-repeat;
+	-webkit-background-size: 24px 24px;
+}
+
+.fm-tree-icon-device {
+	background-image: url(../images/device.png);
+}
+
+.fm-tree-icon-system {
+	background-image: url(../images/system.png);
+}
+
+.fm-tree-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ---- files (right) ---- */
+
+.fm-note {
+	padding: 30px;
+	text-align: center;
+	color: #777;
+}
+
+.fm-searchbar {
+	padding: 4px 12px;
+	font-size: 14px;
+	background: #fff8d6;
+	border-bottom: 1px solid #e3d9a0;
+}
+
+/* Column headings; tap one to sort by it. */
+.fm-heads {
+	height: 34px;
+	padding: 0 14px;
+	font-size: 14px;
+	color: #555;
+	background: #f0f0f0;
+	border-bottom: 1px solid #d0d0d0;
+}
+
+.fm-head {
+	line-height: 34px;
+	white-space: nowrap;
+}
+
+.fm-head-text {
+	display: inline-block;
+}
+
+.fm-sort-mark {
+	display: inline-block;
+	width: 0;
+	height: 0;
+	margin-left: 6px;
+	vertical-align: middle;
+}
+
+.fm-sort-up {
+	border-left: 5px solid transparent;
+	border-right: 5px solid transparent;
+	border-bottom: 6px solid #777;
+}
+
+.fm-sort-down {
+	border-left: 5px solid transparent;
+	border-right: 5px solid transparent;
+	border-top: 6px solid #777;
+}
+
+.fm-row {
+	height: 48px;
+	padding: 0 14px;
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+}
+
+.fm-selected {
+	background: #cfe2f3;
+}
+
+.fm-check {
+	width: 22px;
+	height: 22px;
+	margin-right: 12px;
+	background: url(../images/check-off.png) center center no-repeat;
+}
+
+.fm-check-on {
+	background-image: url(../images/check-on.png);
+}
+
+.fm-icon {
+	width: 32px;
+	height: 32px;
+	margin-right: 12px;
+	overflow: hidden;
+	text-align: center;
+	background-repeat: no-repeat;
+	background-position: center center;
+	-webkit-background-size: 32px 32px;
+}
+
+.fm-icon-folder {
+	background-image: url(../images/folder.png);
+}
+
+.fm-icon-file {
+	background-image: url(../images/file.png);
+}
+
+.fm-name-box {
+	overflow: hidden;
+}
+
+.fm-name {
+	font-size: 17px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fm-where {
+	font-size: 12px;
+	color: #999;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fm-col {
+	font-size: 14px;
+	color: #777;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fm-col-date {
+	width: 160px;
+}
+
+.fm-col-type {
+	width: 170px;
+}
+
+.fm-col-size {
+	width: 90px;
+	text-align: right;
+}
+
+.fm-narrow .fm-col-type {
+	display: none;
+}
+
+/* The letters on a file's icon, colored by kind of file. */
+.fm-tag {
+	display: inline-block;
+	margin-top: 15px;
+	padding: 0 2px;
+	font-size: 8px;
+	line-height: 10px;
+	font-weight: bold;
+	color: #fff;
+	background: #8a8a8a;
+	border-radius: 2px;
+}
+
+.fm-tag-image { background: #3a9a4a; }
+.fm-tag-audio { background: #8a4fb5; }
+.fm-tag-video { background: #c8443c; }
+.fm-tag-doc { background: #2a5caa; }
+.fm-tag-pdf { background: #c0392b; }
+.fm-tag-sheet { background: #1f7a44; }
+.fm-tag-slides { background: #d2622a; }
+.fm-tag-text { background: #6d7680; }
+.fm-tag-archive { background: #9a7b2f; }
+.fm-tag-app { background: #e08a1e; }
+.fm-tag-book { background: #1d8a8a; }
+.fm-tag-data { background: #55606e; }
+.fm-tag-comic { background: #c2387a; }
+
+/* ---- icons view ---- */
+
+.fm-grid-row {
+	padding: 0 2px;
+}
+
+.fm-cell {
+	width: 124px;
+	height: 124px;
+	padding: 10px 6px 0;
+	text-align: center;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+}
+
+.fm-cell.fm-selected {
+	border-color: #8db8e0;
+}
+
+.fm-cell-empty {
+	visibility: hidden;
+}
+
+.fm-big-icon {
+	width: 64px;
+	height: 64px;
+	margin: 0 auto;
+	overflow: hidden;
+	text-align: center;
+	background-repeat: no-repeat;
+	background-position: center center;
+	-webkit-background-size: 64px 64px;
+}
+
+.fm-big-icon .fm-tag {
+	margin-top: 34px;
+	padding: 0 4px;
+	font-size: 11px;
+	line-height: 14px;
+}
+
+.fm-icon-picture {
+	width: 62px;
+	height: 62px;
+	border: 1px solid #c4c4c4;
+	background-color: #eee;
+	-webkit-background-size: cover;
+}
+
+.fm-cell-name {
+	max-height: 32px;
+	margin-top: 6px;
+	overflow: hidden;
+	font-size: 13px;
+	line-height: 16px;
+	word-wrap: break-word;
+}
+
+/* ---- picture viewer ---- */
+
+.fm-viewer {
+	background: #000;
+}
+
+.fm-viewer-title {
+	padding: 0 12px;
+	color: #fff;
+	font-size: 18px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fm-viewer-count {
+	padding: 0 12px;
+	color: #bbb;
+	font-size: 14px;
+	white-space: nowrap;
+}
+
+.fm-viewer-stage {
+	background-color: #000;
+	background-repeat: no-repeat;
+	background-position: center center;
+	-webkit-background-size: contain;
+}
+
+/* ---- text editor ---- */
+
+.fm-editor, .fm-editor-page {
+	background: #fff;
+}
+
+.fm-editor-text {
+	display: block;
+	width: 100%;
+	margin: 0;
+	padding: 12px 14px;
+	border: none;
+	outline: none;
+	resize: none;
+	overflow: hidden;
+	font-family: monospace;
+	font-size: 15px;
+	line-height: 20px;
+	color: #222;
+	background: #fff;
+	-webkit-appearance: none;
+	-webkit-box-sizing: border-box;
+	box-sizing: border-box;
+}
+
+/* ---- dialogs ---- */
+
+.fm-dialog-text {
+	padding: 2px 0 12px;
+	font-size: 16px;
+}
+
+.fm-dialog-small {
+	padding-top: 8px;
+	font-size: 13px;
+	color: #777;
+}
+
+.fm-dialog-problem {
+	padding-top: 8px;
+	font-size: 14px;
+	color: #b00000;
+}
+
+.fm-dialog-buttons {
+	margin-top: 14px;
+}
+
+.fm-detail {
+	padding: 5px 0;
+	font-size: 15px;
+}
+
+.fm-detail-label {
+	width: 90px;
+	color: #777;
+}
+
+.fm-detail-value {
+	word-wrap: break-word;
+}

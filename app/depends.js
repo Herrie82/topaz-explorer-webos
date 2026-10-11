@@ -1,0 +1,11 @@
+enyo.depends(
+	"stylesheets/app.css",
+	"source/Util.js",
+	"source/Service.js",
+	"source/Tree.js",
+	"source/FileView.js",
+	"source/Dialogs.js",
+	"source/Viewer.js",
+	"source/Editor.js",
+	"source/App.js"
+);

@@ -1,0 +1,9 @@
+{
+	"app": "com.palm.stark.files",
+	"id": "com.palm.stark.files",
+	"loc_name": "Files",
+	"package_format_version": 2,
+	"services": ["com.palm.stark.files.service"],
+	"vendor": "stark",
+	"version": "0.1.0"
+}
