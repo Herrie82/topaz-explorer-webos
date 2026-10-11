@@ -145,7 +145,7 @@ enyo.kind({
 				return;
 			}
 			if (tries >= 8) {
-				self.$.files.showNote("The file helper did not start. Close Files and open it again.");
+				self.$.files.showNote("The file helper did not start. Close Topaz Explorer and open it again.");
 				return;
 			}
 			self.wake(tries + 1);
@@ -328,7 +328,7 @@ enyo.kind({
 		var self = this;
 		this.$.svc.openFile(e.path, function(r) {
 			if (!r.ok) {
-				// No app takes it. If it turns out to be text, Files shows it itself.
+				// No app takes it. If it turns out to be text, Topaz Explorer shows it itself.
 				FM.log("open " + e.path + ": " + enyo.json.stringify(r.raw || r.error));
 				self.editText(e, true);
 			}
@@ -559,9 +559,9 @@ enyo.kind({
 			return;
 		}
 		this.$.confirmDialog.ask("Allow changes to system files?",
-			"Files will be able to rename, move, replace and delete anything on this TouchPad, " +
+			"Topaz Explorer will be able to rename, move, replace and delete anything on this TouchPad, " +
 			"including the files webOS needs to start. A mistake can leave the TouchPad unable to " +
-			"start until it is restored with webOS Doctor. This stays on until you switch it off or close Files.",
+			"start until it is restored with webOS Doctor. This stays on until you switch it off or close Topaz Explorer.",
 			"Allow", function() {
 				self.setSystem(true);
 			});
@@ -908,7 +908,7 @@ enyo.kind({
 		} else if (s.ok && s.note) {
 			FM.banner(s.note);
 		} else if (!s.ok) {
-			FM.banner("Files lost touch with its helper; check what was " + did);
+			FM.banner("Topaz Explorer lost touch with its helper; check what was " + did);
 		} else if (s.failed) {
 			FM.banner(FM.count(s.failed, "item") + " could not be " + did + (s.firstError ? ", \"" + s.firstError + "\" among them" : ""));
 		} else if (s.cancelled) {

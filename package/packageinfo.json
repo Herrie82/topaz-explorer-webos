@@ -1,7 +1,7 @@
 {
 	"app": "com.palm.stark.files",
 	"id": "com.palm.stark.files",
-	"loc_name": "Files",
+	"loc_name": "Topaz Explorer",
 	"package_format_version": 2,
 	"services": ["com.palm.stark.files.service"],
 	"vendor": "stark",

@@ -1,4 +1,4 @@
-// File service for the Files app (node 0.4.12 on webOS 3 / webOS CE, ES5 only).
+// File service for the Topaz Explorer app (node 0.4.12 on webOS 3 / webOS CE, ES5 only).
 //
 // A web app cannot look through the TouchPad's storage or change anything on
 // it. This service lists folders and does the work of copying, moving and
@@ -1051,7 +1051,7 @@ function archiveNote(code, errors, what) {
 		return "The disk is full.";
 	}
 	if (/Can ?not open .* as archive|is not archive|Unsupported/i.test(errors)) {
-		return "That is not an archive Files can read.";
+		return "That is not an archive Topaz Explorer can read.";
 	}
 	return code === 1 ? "Some of it could not be " + what + "." : "The archive could not be " + what + ".";
 }
@@ -1249,7 +1249,7 @@ startAssistant.prototype.run = function(future) {
 	var i;
 
 	if (job && !job.finished) {
-		return fail(future, "Files is still busy with the last thing you asked for.");
+		return fail(future, "Topaz Explorer is still busy with the last thing you asked for.");
 	}
 	if (op === "extract" || op === "pack") {
 		return startArchive(future, args, op);

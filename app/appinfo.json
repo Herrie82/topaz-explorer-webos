@@ -4,9 +4,9 @@
 	"vendor": "stark",
 	"type": "web",
 	"main": "index.html",
-	"title": "Files",
+	"title": "Topaz Explorer",
 	"icon": "images/icon.png",
 	"splashicon": "images/icon-256x256.png",
 	"uiRevision": 2,
-	"keywords": ["Files", "Explorer", "Folders", "File Manager"]
+	"keywords": ["Topaz Explorer", "Files", "Explorer", "Folders", "File Manager"]
 }

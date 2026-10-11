@@ -1,6 +1,6 @@
 /* The picture viewer: one picture filling the screen, with the others from the
 	same folder a swipe or a tap of the arrows away. webOS has no app that takes
-	a picture file to show, so Files shows them itself. */
+	a picture file to show, so Topaz Explorer shows them itself. */
 enyo.kind({
 	name: "FM.Viewer",
 	kind: enyo.VFlexBox,

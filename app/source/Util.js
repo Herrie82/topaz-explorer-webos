@@ -157,18 +157,18 @@ FM.dress = function(e, dir) {
 	return e;
 };
 
-// Whether Files can show an entry itself, as a picture.
+// Whether Topaz Explorer can show an entry itself, as a picture.
 FM.isPicture = function(e) {
 	return !e.d && /^(jpe?g|png|bmp|gif)$/.test(e.ext);
 };
 
-// Whether Files opens an entry in its own text editor. Web pages, contact
+// Whether Topaz Explorer opens an entry in its own text editor. Web pages, contact
 // cards and calendar files go to the apps that show them.
 FM.isText = function(e) {
 	return !e.d && e.family === "text" && !/^(html?|vcf|ics)$/.test(e.ext);
 };
 
-// Whether an entry is an archive Files can extract. Comic books are archives
+// Whether an entry is an archive Topaz Explorer can extract. Comic books are archives
 // too, but they are for reading.
 FM.isArchive = function(e) {
 	return !e.d && (e.family === "archive" || e.ext === "iso");

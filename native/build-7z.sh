@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds 7za, the archiver the Files service runs, for the TouchPad.
+# Builds 7za, the archiver the Topaz Explorer service runs, for the TouchPad.
 #
-#     wsl -u <user> -- bash /mnt/h/files-webos/native/build-7z.sh
+#     wsl -u <user> -- bash /mnt/h/topaz-explorer-webos/native/build-7z.sh
 #
 # This is p7zip 16.02 (7-Zip for POSIX) built as one program, 7za, holding every
 # format the full 7-Zip has: it reads and writes 7z, zip, tar, gzip, bzip2 and

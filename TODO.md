@@ -24,7 +24,7 @@ the Extract menu, the More menu and Compress, the password prompt.
 - The tree does not scroll to the folder being shown; "System" sits below all of My TouchPad's
   folders unless My TouchPad is closed.
 - No "Open with": a file opens in whichever app the system picks. Pictures, text and archives
-  are handled by Files itself.
+  are handled by Topaz Explorer itself.
 - The text editor opens files up to 300 KB, has no find, and no undo beyond the keyboard's own.
 - An archive cannot be looked into without extracting it, and .tar.gz cannot be made (zip, 7z and
   tar can).

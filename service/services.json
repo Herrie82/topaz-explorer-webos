@@ -1,6 +1,6 @@
 {
 	"id": "com.palm.stark.files.service",
-	"description": "Lists, copies, moves and deletes files for the Files app",
+	"description": "Lists, copies, moves and deletes files for the Topaz Explorer app",
 	"engine": "node",
 	"activityTimeout": 120,
 	"services": [

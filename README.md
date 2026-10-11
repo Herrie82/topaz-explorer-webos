@@ -1,8 +1,10 @@
-# Files
+# Topaz Explorer
 
 A file manager for the HP TouchPad (webOS 3.0.5 and webOS Community Edition) that works like a
 desktop one: a folder tree on the left, the folder's contents on the right, and back, forward, up
 and a tappable path across the top. It reaches the whole system, not only the USB drive.
+
+"Topaz" was HP's own name for the TouchPad while it was being made.
 
 ## What it can do
 
@@ -50,7 +52,7 @@ see [TODO.md](TODO.md) for what has been checked and what is known to be missing
 
 ## A word on what it is allowed to do
 
-Files runs its file service as root, outside the jail webOS puts other installed services in.
+Topaz Explorer runs its file service as root, outside the jail webOS puts other installed services in.
 That is what lets it show the whole system, and with "Allow System Changes" switched on it can
 change or delete files webOS needs to start. A mistake there can mean restoring the TouchPad with
 webOS Doctor. It is a tool for people who want that reach.
