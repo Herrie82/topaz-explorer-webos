@@ -1,0 +1,4 @@
+# Scripts that run on Linux keep Unix line endings on every machine.
+*.sh text eol=lf
+*.py text eol=lf
+service/bin/7za binary
