@@ -67,6 +67,18 @@ FM.nameOf = function(path) {
 
 // The folders from the storage, or from the top of the system, down to a path: [{name, path}]
 FM.trail = function(path) {
+	if (FM.isNet(path)) {
+		// A site address walks its own way: the address, then each folder.
+		var netRoot = path.replace(/^(ftps?:\/\/[^\/]+).*$/, "$1");
+		var net = [{name: netRoot, path: netRoot}];
+		var rest = path.substring(netRoot.length).split("/");
+		for (var j = 0; j < rest.length; j++) {
+			if (rest[j]) {
+				net.push({name: rest[j], path: netRoot + "/" + rest[j]});
+			}
+		}
+		return net;
+	}
 	var stored = FM.inStorage(path);
 	var out = [stored ? {name: FM.ROOT_NAME, path: FM.ROOT} : {name: FM.SYSTEM_NAME, path: FM.SYSTEM}];
 	var rest = path.substring(stored ? FM.ROOT.length : 0).split("/");
@@ -119,6 +131,37 @@ FM.thumbUrl = function(path, px) {
 	}
 	return "url('/var/luna/data/extractfs" + encodeURIComponent(path).replace(/'/g, "%27") +
 		":0:0:" + px + ":" + px + ":3')";
+};
+
+// ---- network folders ----
+
+// Whether a path is a folder or file on an FTP site.
+FM.isNet = function(path) {
+	return /^ftps?:\/\//i.test(String(path || ""));
+};
+
+// The parts of a site address, or null: {scheme, host, port, user, pass, start}.
+// The name and password, when the address carries them, are taken plainly.
+FM.parseNet = function(url) {
+	var m = /^(ftps?):\/\/(?:([^:@\/]*)(?::([^@\/]*))?@)?([^\/:]+)(?::(\d+))?(\/.*)?$/i
+		.exec(String(url || "").replace(/^\s+|\s+$/g, ""));
+	if (!m) {
+		return null;
+	}
+	function plain(s) {
+		try {
+			return decodeURIComponent(s || "");
+		} catch (e) {
+			return s || "";
+		}
+	}
+	return {scheme: m[1].toLowerCase(), user: plain(m[2]), pass: plain(m[3]),
+		host: m[4], port: m[5] ? Number(m[5]) : 0, start: m[6] || "/"};
+};
+
+// "ftp://host:port": the part of a site address before its path.
+FM.netRoot = function(parts) {
+	return parts.scheme + "://" + parts.host + (parts.port ? ":" + parts.port : "");
 };
 
 // ---- kinds of file ----

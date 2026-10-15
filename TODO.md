@@ -1,5 +1,23 @@
 # To do
 
+## Network folders (FTP), 2026-10-15
+
+Browsing: type an ftp:// or ftps:// address through the globe button in the
+path bar; the name and password are asked for when the server wants them and
+the address did not carry them. Copy brings things down from a site and takes
+them up to one (Cut = move: the source goes only when every part arrived).
+Delete, rename and New Folder work on the site. Everything runs through the
+system's curl (7.88.1 on webOS CE), one transfer at a time, so a copy is as
+fast as one curl per file (~50 small files a minute over the LAN, roughly).
+
+Not yet: SFTP and SMB. The system curl has no sftp (and the curl-tls13
+package's libcurl does not either), so SFTP waits on building libssh2 + curl
+with the PDK like 7za. SMB needs a curl built with libsmb or a small
+libsmbclient tool; the kernel's own CIFS mount cannot talk to modern servers
+(Samba 4 rejects its SMB1). Also not yet: copying from one site folder to
+another (go through My TouchPad), opening a file straight from a site (copy
+it first), searching below a site folder, and compressing on a site.
+
 ## Checked on the TouchPad (2026-10-10)
 
 By screenshot: details list, icons view with photo thumbnails, folder tree, path bar, a system

@@ -14,7 +14,13 @@ enyo.kind({
 					{name: "back", kind: "IconButton", icon: "images/back.png", className: "enyo-button-dark fm-nav", onclick: "goBack"},
 					{name: "forward", kind: "IconButton", icon: "images/forward.png", className: "enyo-button-dark fm-nav", onclick: "goForward"},
 					{name: "up", kind: "IconButton", icon: "images/up.png", className: "enyo-button-dark fm-nav", onclick: "goUp"},
+					{name: "net", kind: "IconButton", icon: "images/net.png", className: "enyo-button-dark fm-nav", onclick: "netClick"},
 					{name: "crumbs", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs"},
+					{name: "addrBar", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs", showing: false, components: [
+						{name: "addr", kind: "Input", flex: 1, className: "fm-addr", hint: "ftp://server or ftp://server/folder",
+							autoCapitalize: "lowercase", autocorrect: false, spellcheck: false, onkeydown: "addrKey"},
+						{kind: "Button", caption: "Go", className: "enyo-button-blue fm-go", onclick: "netGo"}
+					]},
 					{name: "search", kind: "SearchInput", hint: "Search", className: "fm-search",
 						onchange: "searchChanged", onCancel: "searchChanged",
 						autoCapitalize: "lowercase", autocorrect: false, spellcheck: false, changeOnInput: true}
@@ -79,6 +85,7 @@ enyo.kind({
 			{caption: "Refresh", onclick: "refreshClick"}
 		]},
 		{name: "nameDialog", kind: "FM.NameDialog"},
+		{name: "loginDialog", kind: "FM.LoginDialog"},
 		{name: "confirmDialog", kind: "FM.ConfirmDialog"},
 		{name: "conflictDialog", kind: "FM.ConflictDialog"},
 		{name: "progressDialog", kind: "FM.ProgressDialog", onCancel: "cancelJob"},
@@ -95,6 +102,9 @@ enyo.kind({
 		this.free = -1;
 		this.loads = 0;
 		this.wakes = 0;
+		// The site whose folder is being shown, when there is one:
+		// {id, root: "ftp://host:port", user, pass}. Session only.
+		this.net = null;
 		// Changes outside the storage are allowed. Off again at every start.
 		this.system = false;
 		this.awake = false;
@@ -191,7 +201,21 @@ enyo.kind({
 		try {
 			path = decodeURIComponent(path);
 		} catch (e) {}
-		this.go(path.replace(/\/+$/, "") || FM.ROOT);
+		path = path.replace(/\/+$/, "") || FM.ROOT;
+		if (FM.isNet(path)) {
+			// A site address: connect first, then show its folder.
+			var parts = FM.parseNet(path);
+			var self = this;
+			if (parts) {
+				this.netConnect(parts, function(ok) {
+					if (ok) {
+						self.go(path);
+					}
+				});
+			}
+			return true;
+		}
+		this.go(path);
 		return true;
 	},
 
@@ -199,8 +223,12 @@ enyo.kind({
 
 	// how: "history" when moving along back/forward, "start" for the first folder.
 	go: function(path, how) {
-		if (path.charAt(0) !== "/") {
+		if (path.charAt(0) !== "/" && !FM.isNet(path)) {
 			path = FM.ROOT;
+		}
+		if (FM.isNet(path)) {
+			// The free space of the last local folder says nothing here.
+			this.free = -1;
 		}
 		if (!how && this.path && path !== this.path) {
 			this.backs.push(this.path);
@@ -224,6 +252,10 @@ enyo.kind({
 		this.showCrumbs();
 		this.showNav();
 		this.showChoices();
+		if (FM.isNet(path)) {
+			this.loadNet(path, turn);
+			return;
+		}
 		this.$.svc.ask("list", {path: path}, function(r) {
 			if (turn !== self.loads) {
 				return;      // a later folder was asked for meanwhile
@@ -272,6 +304,9 @@ enyo.kind({
 	readSpace: function() {
 		var self = this;
 		var path = this.path;
+		if (FM.isNet(path)) {
+			return;
+		}
 		this.$.svc.ask("space", {path: path}, function(r) {
 			if (path === self.path) {
 				self.free = r.ok ? r.free : -1;
@@ -295,9 +330,10 @@ enyo.kind({
 	},
 
 	goUp: function() {
-		if (this.path !== FM.ROOT) {
-			this.go(FM.parentOf(this.path));
+		if (this.path === FM.ROOT || (this.net && this.path === this.net.root)) {
+			return;
 		}
+		this.go(FM.parentOf(this.path));
 	},
 
 	treePick: function(inSender, path) {
@@ -357,6 +393,136 @@ enyo.kind({
 		this.go(inSender.crumbPath);
 	},
 
+	// ---- sites (FTP) ----
+
+	// The globe was tapped: type an address instead of tapping the path.
+	netClick: function() {
+		var net = this.net && this.path.indexOf(this.net.root) === 0 ? this.path : "";
+		this.$.crumbs.hide();
+		this.$.addrBar.show();
+		this.$.addr.setValue(net);
+		enyo.asyncMethod(this.$.addr, "forceFocusEnableKeyboard");
+	},
+
+	// The address bar was left without going anywhere.
+	addrCancel: function() {
+		this.$.addrBar.hide();
+		this.$.crumbs.show();
+	},
+
+	addrKey: function(inSender, inEvent) {
+		if (inEvent.keyCode === 13) {
+			this.netGo();
+		} else if (inEvent.keyCode === 27) {
+			this.addrCancel();
+		}
+	},
+
+	// An address was typed: connect to the site and show its folder.
+	netGo: function() {
+		var text = String(this.$.addr.getValue() || "").replace(/^\s+|\s+$/g, "");
+		if (!text) {
+			this.addrCancel();
+			return;
+		}
+		if (text.charAt(0) === "/") {
+			// A local path works here too.
+			this.addrCancel();
+			this.go(text);
+			return;
+		}
+		var parts = FM.parseNet(text);
+		if (!parts) {
+			FM.banner("Type an address like ftp://server/folder");
+			return;
+		}
+		if (parts.scheme !== "ftp" && parts.scheme !== "ftps") {
+			FM.banner("Only FTP servers can be opened so far");
+			return;
+		}
+		var self = this;
+		this.netConnect(parts, function(ok) {
+			if (!ok) {
+				return;
+			}
+			self.addrCancel();
+			self.go(self.net.root + parts.start);
+		});
+	},
+
+	// Sign in to a site, asking for the name and password when the server
+	// wants them and the address did not carry them. done(ok).
+	netConnect: function(parts, done) {
+		var self = this;
+		function open(user, pass) {
+			var creds = user ? encodeURIComponent(user) + ":" + encodeURIComponent(pass) + "@" : "";
+			self.$.svc.ask("netOpen", {url: FM.netRoot(parts) + "/" + creds}, function(r) {
+				if (!r.ok && r.login) {
+					self.$.loginDialog.ask(FM.netRoot(parts), user || "", function(u, p) {
+						open(u, p);
+					});
+					return;
+				}
+				if (!r.ok) {
+					FM.banner(r.error);
+					done(false);
+					return;
+				}
+				self.net = {id: r.id, root: FM.netRoot(parts), user: user || "", pass: pass || ""};
+				done(true);
+			});
+		}
+		open(parts.user, parts.pass);
+	},
+
+	// Read the folder being shown on the connected site.
+	loadNet: function(path, turn) {
+		var self = this;
+		if (!this.net || (path !== this.net.root && path.indexOf(this.net.root + "/") !== 0)) {
+			this.entries = [];
+			this.$.files.showFolder([]);
+			this.$.files.showNote("Tap the globe and type the site's address to connect.");
+			return;
+		}
+		this.netList(path.substring(this.net.root.length) || "/", turn, false);
+	},
+
+	netList: function(remote, turn, retry) {
+		var self = this;
+		var id = this.net ? this.net.id : 0;
+		this.$.svc.ask("netList", {id: id, path: remote}, function(r) {
+			if (turn !== self.loads) {
+				return;      // a later folder was asked for meanwhile
+			}
+			if (!r.ok && !retry && /no longer connected/.test(r.error) && self.net) {
+				// The helper restarted; sign in again and try once more.
+				var parts = FM.parseNet(self.net.root) || {scheme: "ftp", host: ""};
+				parts.user = self.net.user;
+				parts.pass = self.net.pass;
+				self.netConnect(parts, function(ok) {
+					if (ok && turn === self.loads) {
+						self.netList(remote, turn, true);
+					}
+				});
+				return;
+			}
+			if (!r.ok) {
+				self.entries = [];
+				self.$.files.showFolder([]);
+				self.$.files.showNote(r.error);
+				self.showStatus();
+				return;
+			}
+			var entries = r.entries;
+			for (var i = 0; i < entries.length; i++) {
+				FM.dress(entries[i], self.path);
+			}
+			self.entries = entries;
+			self.$.files.showFolder(entries);
+			self.showStatus();
+		});
+	},
+
 	backGesture: function(inSender, inEvent) {
 		if (this.$.pane.getViewName() === "viewer") {
 			this.closeViewer();
@@ -379,6 +545,10 @@ enyo.kind({
 	openEntry: function(inSender, e) {
 		if (e.d) {
 			this.go(e.path);
+			return;
+		}
+		if (FM.isNet(e.path)) {
+			FM.banner("Copy it to My TouchPad first, then open it from there");
 			return;
 		}
 		if (FM.isPicture(e)) {
@@ -411,6 +581,10 @@ enyo.kind({
 
 	// An archive was tapped: offer to unpack it.
 	askExtract: function(e) {
+		if (FM.isNet(e.path)) {
+			FM.banner("Copy the archive to My TouchPad to extract it");
+			return;
+		}
 		if (!this.canChange()) {
 			FM.banner("Copy the archive to " + FM.ROOT_NAME + " to extract it");
 			return;
@@ -558,7 +732,9 @@ enyo.kind({
 	showNav: function() {
 		this.$.back.setDisabled(!this.backs.length);
 		this.$.forward.setDisabled(!this.forwards.length);
-		this.$.up.setDisabled(this.path === FM.ROOT);
+		// The top of the site, like the top of the storage, has nothing above.
+		this.$.up.setDisabled(this.path === FM.ROOT ||
+			(!!this.net && this.path === this.net.root));
 	},
 
 	// The path as folders to tap. A long path keeps its last few.
@@ -596,7 +772,9 @@ enyo.kind({
 		if (this.free >= 0) {
 			text += "  ·  " + FM.size(this.free) + " free";
 		}
-		if (!FM.inStorage(this.path)) {
+		if (FM.isNet(this.path)) {
+			text += this.net ? "  ·  FTP" : "";
+		} else if (!FM.inStorage(this.path)) {
 			text += this.canChange() ? "  ·  System files: changes allowed" : "  ·  Read-only";
 		}
 		this.$.status.setContent(text);
@@ -641,9 +819,13 @@ enyo.kind({
 
 	// Whether things in the folder shown may be changed. Outside the storage
 	// they can be looked at and copied from; changing them takes the switch in
-	// the app menu, and the live folders cannot be changed at all.
+	// the app menu, and the live folders cannot be changed at all. A site can
+	// be changed while it is connected.
 	canChange: function() {
 		var path = this.path || FM.ROOT;
+		if (FM.isNet(path)) {
+			return !!this.net;
+		}
 		return FM.inStorage(path) || (this.system && !FM.live(path));
 	},
 
@@ -722,7 +904,8 @@ enyo.kind({
 		}
 		this.$.files.setFilter(text);
 		this.$.searchBar.setShowing(!!text);
-		this.$.deep.show();
+		// The folders below a site are not searched.
+		this.$.deep.setShowing(!!text && !FM.isNet(this.path));
 		this.$.searchNote.setContent("In this folder: names containing \"" + text + "\"");
 		this.showStatus();
 	},
@@ -731,7 +914,7 @@ enyo.kind({
 		var text = this.searching;
 		var self = this;
 		var path = this.path;
-		if (!text) {
+		if (!text || FM.isNet(path)) {
 			return;
 		}
 		this.$.searchNote.setContent("Searching…");
@@ -792,7 +975,7 @@ enyo.kind({
 		this.$.del.setDisabled(!count || !canChange);
 		this.$.more.setDisabled(!count);
 		this.$.rename.setDisabled(count !== 1 || !canChange);
-		this.$.pack.setDisabled(!canChange);
+		this.$.pack.setDisabled(!canChange || FM.isNet(this.path));
 	},
 
 	pickedPaths: function() {
@@ -819,21 +1002,43 @@ enyo.kind({
 		if (!paths.length) {
 			return;
 		}
-		this.clip = {op: op, paths: paths};
+		this.clip = {op: op, paths: paths, from: this.path};
 		this.doneSelecting();
 		this.showChoices();
 		FM.banner(FM.count(paths.length, "item") + (op === "copy" ? " to copy" : " to move") + ": go to a folder and tap Paste");
 	},
 
 	paste: function() {
-		if (this.clip) {
-			this.runJob(this.clip.op, this.clip.paths, this.path, "");
+		if (!this.clip) {
+			return;
 		}
+		if (FM.isNet(this.path) && FM.isNet(this.clip.from)) {
+			FM.banner("Copy from the site to My TouchPad first, then back up to the site");
+			return;
+		}
+		var extra = {};
+		if (FM.isNet(this.path) || FM.isNet(this.clip.from)) {
+			extra.net = this.net.id;
+		}
+		this.runJob(this.clip.op, this.clip.paths, this.path, "", extra);
 	},
 
 	newFolder: function() {
 		var self = this;
 		var path = this.path;
+		if (FM.isNet(path)) {
+			this.$.nameDialog.ask("New Folder", "New folder", "Create", function(name) {
+				self.$.svc.ask("netMkdir", {id: self.net.id, path: path, name: name}, function(r) {
+					if (!r.ok) {
+						self.$.nameDialog.showProblem(r.error);
+						return;
+					}
+					self.$.nameDialog.done();
+					self.foldersChanged([path]);
+				});
+			});
+			return;
+		}
 		this.$.nameDialog.ask("New Folder", "New folder", "Create", function(name) {
 			self.$.svc.ask("mkdir", {path: path, name: name, system: self.system}, function(r) {
 				if (!r.ok) {
@@ -853,6 +1058,19 @@ enyo.kind({
 			return;
 		}
 		var e = picked[0];
+		if (FM.isNet(e.path)) {
+			this.$.nameDialog.ask("Rename", e.n, "Rename", function(name) {
+				self.$.svc.ask("netRename", {id: self.net.id, path: e.path, name: name}, function(r) {
+					if (!r.ok) {
+						self.$.nameDialog.showProblem(r.error);
+						return;
+					}
+					self.$.nameDialog.done();
+					self.foldersChanged([FM.parentOf(e.path)]);
+				});
+			});
+			return;
+		}
 		this.$.nameDialog.ask("Rename", e.n, "Rename", function(name) {
 			self.$.svc.ask("rename", {path: e.path, name: name, system: self.system}, function(r) {
 				if (!r.ok) {
@@ -892,6 +1110,22 @@ enyo.kind({
 			return;
 		}
 		var one = picked.length === 1 ? picked[0] : null;
+		// On a site only what the listing said is known.
+		if (FM.isNet(this.path)) {
+			var netRows = [["Name", one ? one.n : FM.count(picked.length, "item")]];
+			if (one) {
+				netRows.push(["Type", one.type]);
+				netRows.push(["Location", FM.place(FM.parentOf(one.path))]);
+				netRows.push(["Size", one.d ? "" : FM.size(one.s) + (one.s >= 1024 ? " (" + one.s + " bytes)" : "")]);
+				if (one.m) {
+					netRows.push(["Modified", FM.when(one.m)]);
+				}
+			} else {
+				netRows.push(["Location", FM.place(this.path)]);
+			}
+			this.$.detailsDialog.showRows(netRows);
+			return;
+		}
 		var rows = [];
 		rows.push(["Name", one ? one.n : FM.count(picked.length, "item")]);
 		if (one) {

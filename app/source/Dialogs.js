@@ -56,6 +56,63 @@ enyo.kind({
 	}
 });
 
+// Ask for the name and password a site wants: ask(root, user, callback(user, pass)).
+// The dialog closes as soon as Connect is tapped; a refused sign-in asks again.
+enyo.kind({
+	name: "FM.LoginDialog",
+	kind: enyo.ModalDialog,
+	lazy: false,
+	components: [
+		{name: "user", kind: "Input", autoCapitalize: "lowercase", autocorrect: false, spellcheck: false,
+			hint: "Name", onkeydown: "keyDown"},
+		{name: "pass", kind: "PasswordInput", hint: "Password", onkeydown: "keyDown"},
+		{name: "problem", className: "fm-dialog-problem", showing: false},
+		{kind: "HFlexBox", className: "fm-dialog-buttons", components: [
+			{kind: "Button", caption: "Cancel", flex: 1, onclick: "cancelClick"},
+			{name: "ok", kind: "Button", caption: "Connect", flex: 1, className: "enyo-button-affirmative", onclick: "okClick"}
+		]}
+	],
+
+	ask: function(root, user, callback) {
+		this.callback = callback;
+		this.setCaption("Connect to " + root);
+		this.$.user.setValue(user);
+		this.$.pass.setValue("");
+		this.showProblem("");
+		this.openAtCenter();
+		enyo.asyncMethod(this.$.user, "forceFocusEnableKeyboard");
+	},
+
+	showProblem: function(text) {
+		this.$.problem.setContent(text);
+		this.$.problem.setShowing(!!text);
+	},
+
+	keyDown: function(inSender, inEvent) {
+		if (inEvent.keyCode === 13) {
+			if (inSender === this.$.user) {
+				enyo.asyncMethod(this.$.pass, "forceFocusEnableKeyboard");
+			} else {
+				this.okClick();
+			}
+		}
+	},
+
+	okClick: function() {
+		var user = String(this.$.user.getValue() || "").replace(/^\s+|\s+$/g, "");
+		if (!user) {
+			this.showProblem("Type a name first.");
+			return;
+		}
+		this.close();
+		this.callback(user, String(this.$.pass.getValue() || ""));
+	},
+
+	cancelClick: function() {
+		this.close();
+	}
+});
+
 // A question: ask(title, message, okCaption, callback()). The callback runs only on yes.
 enyo.kind({
 	name: "FM.ConfirmDialog",

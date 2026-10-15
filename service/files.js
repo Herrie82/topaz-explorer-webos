@@ -12,6 +12,8 @@
 // jail that holds little besides /media/internal (see /usr/bin/run-js-service),
 // and runs those named com.palm.* as they are.
 //
+// It can also open a folder on an FTP server, through the system's curl.
+//
 // Every answer carries "ok". A failure has ok: false and "error", a sentence
 // the app can show. (returnValue cannot carry a failure back to an app.)
 
@@ -1070,6 +1072,708 @@ function moveSteps(steps, from, to, st, mode) {
 	});
 }
 
+// ---- network folders (FTP) -----------------------------------------------------
+//
+// A folder on an FTP server is reached with the curl the system has
+// (/usr/bin/curl; on webOS CE it speaks FTP, FTPS and modern TLS). One site
+// at a time is "opened": the app signs in with netOpen and gets a number to
+// call the site by. The name and password go to curl as its configuration on
+// its input, never on the command line where another process could read them.
+//
+// Copies go both ways through the same "start" command as local ones, with a
+// net number: from the site they download, to it they upload. A move takes
+// the source away at the end, but only when every part arrived.
+
+var nets = {};          // id -> {base, user, pass, extra}
+var netCount = 0;
+var CURL = "/usr/bin/curl";
+var NET_CONNECT = 10;   // seconds to reach the server
+var NET_LIST_TIME = 25; // seconds to list a folder
+
+// The parts of "ftp://user:pass@host:port/start", or null.
+function parseNet(url) {
+	url = String(url || "").replace(/^\s+|\s+$/g, "");
+	var m = /^(ftps?):\/\/(?:([^:@\/]*)(?::([^@\/]*))?@)?([^\/:]+)(?::(\d+))?(\/.*)?$/i.exec(url);
+	if (!m) {
+		return null;
+	}
+	function plain(s) {
+		try {
+			return decodeURIComponent(s || "");
+		} catch (e) {
+			return s || "";
+		}
+	}
+	return {scheme: m[1].toLowerCase(), user: plain(m[2]), pass: plain(m[3]),
+		host: m[4], port: m[5] ? Number(m[5]) : 0, start: m[6] || "/"};
+}
+
+// Whether a path an app sent is a folder or file on a site.
+function isNetPath(path) {
+	return /^ftps?:\/\//i.test(String(path || ""));
+}
+
+// A tidy path on a site ("/dir/sub", "/" at worst), or null.
+function cleanNetPath(path) {
+	path = String(path || "/");
+	if (path.charAt(0) !== "/") {
+		path = "/" + path;
+	}
+	var parts = path.split("/");
+	var out = [];
+	for (var i = 0; i < parts.length; i++) {
+		if (!parts[i] || parts[i] === ".") {
+			continue;
+		}
+		if (parts[i] === "..") {
+			return null;
+		}
+		out.push(parts[i]);
+	}
+	return "/" + out.join("/");
+}
+
+// A URL for something on the site: each part of the path encoded, slashes
+// kept, so names with spaces and the like reach the server whole. curl is
+// told --globoff so [ and { in names are not read as patterns.
+function netUrl(site, path) {
+	var enc = [];
+	var parts = String(path || "/").split("/");
+	for (var i = 0; i < parts.length; i++) {
+		if (parts[i]) {
+			enc.push(encodeURIComponent(parts[i]));
+		}
+	}
+	return site.base + enc.join("/");
+}
+
+// A URL for listing a folder: with the trailing slash, curl lists the folder
+// instead of trying to fetch a file by that name.
+function netDirUrl(site, path) {
+	return path === "/" ? site.base : netUrl(site, path) + "/";
+}
+
+// Run curl once for a site. done(code, errorText, listingText). The sign-in
+// is written to curl's input; a job's children are kept so Cancel can stop
+// them.
+function runCurl(site, args, done) {
+	var out = "";
+	var err = "";
+	var code = 255;
+	var child;
+	try {
+		child = child_process.spawn(CURL, ["-K", "-", "--silent", "--show-error", "--globoff",
+			"--connect-timeout", String(NET_CONNECT)].concat(site.extra || []).concat(args), {cwd: "/"});
+	} catch (e) {
+		setTimeout(function() {
+			done(255, String(e), "");
+		}, 0);
+		return;
+	}
+	if (job && !job.finished) {
+		job.kids = job.kids || [];
+		job.kids.push(child);
+	}
+	var ended = false;
+	function finish() {
+		if (ended) {
+			return;
+		}
+		ended = true;
+		if (job && job.kids) {
+			var at = job.kids.indexOf(child);
+			if (at >= 0) {
+				job.kids.splice(at, 1);
+			}
+		}
+		done(code, err, out);
+	}
+	child.stdout.on("data", function(d) {
+		out += d.toString();
+	});
+	child.stderr.on("data", function(d) {
+		err += d.toString();
+	});
+	child.on("exit", function(c) {
+		code = c === null || c === undefined ? 255 : c;
+		finish();
+	});
+	// The name and password, as curl's configuration, on its input. A site
+	// with no name is signed in as anonymous.
+	function quoted(s) {
+		return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\r\n]/g, " ");
+	}
+	var user = site.user || "anonymous";
+	var pass = site.pass || (user === "anonymous" ? "topaz@" : "");
+	try {
+		child.stdin.write("user = \"" + quoted(user) + ":" + quoted(pass) + "\"\n");
+		child.stdin.end();
+	} catch (e2) {}
+}
+// What to say when the site did not answer as hoped.
+function netWhyText(code, err) {
+	err = String(err || "");
+	if (/530|login or password|authentication|password required/i.test(err) || code === 67) {
+		return "The server refused the name or password.";
+	}
+	if (code === 6 || code === 7 || code === 8) {
+		return "Could not reach the server.";
+	}
+	if (code === 28) {
+		return "The server took too long to answer.";
+	}
+	if (code === 78 || /550|no such/i.test(err)) {
+		return "That is not on the server, or the server would not show it.";
+	}
+	if (code === 18) {
+		return "The transfer was cut short.";
+	}
+	log("curl said " + code + ": " + err.replace(/\s+/g, " ").substring(0, 200));
+	return "The server did not do what was asked.";
+}
+
+var NET_MONTHS = {jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11};
+
+// One line of a folder listing as the server wrote it (the UNIX "ls -l"
+// kind, or the older MS-DOS kind), or null. -> {n, d, s, m} like list's.
+function parseNetLine(line) {
+	line = String(line || "").replace(/[\r\s]+$/, "");
+	if (!line || /^total \d+$/i.test(line)) {
+		return null;
+	}
+	var m = /^([\-dl])[rwxsStT+\-]{9}.*?\s+(\d+)\s+\S+\s+\S+\s+(\d+)\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4}|\d{1,2}:\d{2})\s+(.+)$/.exec(line);
+	if (m) {
+		var name = m[7];
+		if (name === "." || name === "..") {
+			return null;
+		}
+		var dir = m[1] === "d";
+		if (m[1] === "l" && name.indexOf(" -> ") >= 0) {
+			// A link: what it points at cannot be known without following it.
+			name = name.substring(0, name.indexOf(" -> "));
+		}
+		return {n: name, d: dir ? 1 : 0, s: Number(m[3]), m: netDate(m[4], m[5], m[6])};
+	}
+	// "10-23-20  03:25PM  5401 file.txt" (or <DIR> instead of a size)
+	m = /^(\d{2})-(\d{2})-(\d{2,4})\s+\d{2}:\d{2}(AM|PM)?\s+(<DIR>|\d+)\s+(.+)$/i.exec(line);
+	if (m) {
+		if (m[6] === "." || m[6] === "..") {
+			return null;
+		}
+		var y = Number(m[3]);
+		y = y < 100 ? 2000 + y : y;
+		var mo = Number(m[1]) - 1;
+		return {n: m[6], d: m[5] === "<DIR>" ? 1 : 0, s: m[5] === "<DIR>" ? 0 : Number(m[5]),
+			m: new Date(y, mo >= 0 && mo < 12 ? mo : 0, Number(m[2])).getTime()};
+	}
+	return null;
+}
+
+// "Mar 31 2023", or "Mar 31 14:05" (this year, or last if that is ahead).
+function netDate(mon, day, rest) {
+	var mo = NET_MONTHS[String(mon).toLowerCase()];
+	if (mo === undefined) {
+		return 0;
+	}
+	var d = Number(day);
+	var now = new Date();
+	if (rest.indexOf(":") > 0) {
+		var y = now.getFullYear();
+		if (new Date(y, mo, d).getTime() > now.getTime()) {
+			y--;
+		}
+		return new Date(y, mo, d).getTime();
+	}
+	return new Date(Number(rest), mo, d).getTime();
+}
+
+// A name not used in a folder listing, like freeName but for the site.
+function freeNetName(taken, name, isDir) {
+	if (!taken[String(name).toLowerCase()]) {
+		return name;
+	}
+	var dot = isDir ? -1 : name.lastIndexOf(".");
+	var stem = dot > 0 ? name.substring(0, dot) : name;
+	var ext = dot > 0 ? name.substring(dot) : "";
+	for (var n = 2; n < 1000; n++) {
+		var tryName = stem + " (" + n + ")" + ext;
+		if (!taken[tryName.toLowerCase()]) {
+			return tryName;
+		}
+	}
+	return stem + " (" + new Date().getTime() + ")" + ext;
+}
+
+// The entries of a folder listing, or null with err when it failed.
+function netListOnce(site, path, done) {
+	runCurl(site, ["--max-time", String(NET_LIST_TIME), netDirUrl(site, path)], function(code, err, out) {
+		if (code !== 0) {
+			done(netWhyText(code, err), null);
+			return;
+		}
+		var entries = [];
+		var lines = out.split(/\r?\n/);
+		for (var i = 0; i < lines.length; i++) {
+			var e = parseNetLine(lines[i]);
+			if (e) {
+				entries.push(e);
+			}
+		}
+		done("", entries);
+	});
+}
+
+// {url} -> {id}: open a site, trying the sign-in at once so a wrong name or
+// password is told here. The url may carry them: "ftp://user:pass@host/".
+// login: true in the answer means the app should ask for them.
+var netOpenAssistant = function() {};
+netOpenAssistant.prototype.run = function(future) {
+	var site = parseNet((this.controller.args || {}).url);
+	if (!site) {
+		return fail(future, "That is not an ftp:// or ftps:// address.");
+	}
+	var port = site.port || 21;
+	// ftps on 990 speaks TLS from the start; anywhere else it is asked for
+	// after signing in, which is what servers mostly do.
+	var implicit = site.scheme === "ftps" && (site.port || 0) === 990;
+	var s = {
+		base: (implicit ? "ftps://" : "ftp://") + site.host + ":" + port + "/",
+		user: site.user,
+		pass: site.pass,
+		extra: site.scheme === "ftps" && !implicit ? ["--ssl-reqd"] : []
+	};
+	runCurl(s, ["--max-time", String(NET_LIST_TIME), s.base], function(code, err) {
+		if (code === 0) {
+			nets[++netCount] = s;
+			log("site opened: " + s.base);
+			future.result = {returnValue: true, ok: true, id: netCount};
+			return;
+		}
+		if (/530|login or password|authentication|password required/i.test(err) || code === 67) {
+			future.result = {returnValue: true, ok: false, login: true, error: "The server refused the name or password."};
+			return;
+		}
+		fail(future, netWhyText(code, err));
+	});
+	return future;
+};
+
+// {id}: the site is no longer needed.
+var netCloseAssistant = function() {};
+netCloseAssistant.prototype.run = function(future) {
+	delete nets[(this.controller.args || {}).id];
+	future.result = {returnValue: true, ok: true};
+	return future;
+};
+
+// {id, path} -> {entries}: a folder on the site, shaped like list's.
+var netListAssistant = function() {};
+netListAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var site = nets[args.id];
+	var path = cleanNetPath(args.path);
+	if (!site || !path) {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	netListOnce(site, path, function(err, entries) {
+		if (err) {
+			return fail(future, err);
+		}
+		future.result = {returnValue: true, ok: true, entries: entries};
+	});
+	return future;
+};// {id, path, name} -> {path}: a new name on the site.
+var netRenameAssistant = function() {};
+netRenameAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var site = nets[args.id];
+	var path = cleanNetPath(args.path);
+	var name = String(args.name || "").replace(/^\s+|\s+$/g, "");
+	if (!site || !path || path === "/") {
+		return fail(future, "That cannot be renamed.");
+	}
+	var bad = badName(name, "");
+	if (bad) {
+		return fail(future, bad);
+	}
+	var to = parentOf(path) === "/" ? "/" + name : parentOf(path) + "/" + name;
+	runCurl(site, ["--max-time", "20", "-Q", "RNFR " + path, "-Q", "RNTO " + to, site.base],
+		function(code, err) {
+			if (code !== 0) {
+				return fail(future, netWhyText(code, err));
+			}
+			future.result = {returnValue: true, ok: true, path: to};
+		});
+	return future;
+};
+
+// {id, path, name} -> {path}: a new folder on the site.
+var netMkdirAssistant = function() {};
+netMkdirAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var site = nets[args.id];
+	var path = cleanNetPath(args.path);
+	var name = String(args.name || "").replace(/^\s+|\s+$/g, "");
+	if (!site || !path) {
+		return fail(future, "Folders cannot be made here.");
+	}
+	var bad = badName(name, "");
+	if (bad) {
+		return fail(future, bad);
+	}
+	var made = path === "/" ? "/" + name : path + "/" + name;
+	runCurl(site, ["--max-time", "20", "-Q", "MKD " + made, site.base], function(code, err) {
+		if (code !== 0) {
+			if (/exist|521|550/i.test(String(err || ""))) {
+				return fail(future, "There is already something named \"" + name + "\" here.");
+			}
+			return fail(future, netWhyText(code, err));
+		}
+		future.result = {returnValue: true, ok: true, path: made};
+	});
+	return future;
+};
+
+// Steps that bring one thing down from the site. A folder is walked: each
+// folder is listed, its files come down into a folder of their own, and what
+// is in the way locally gets a number, like "Keep Both".
+function netDownSteps(steps, site, remote, local, isDir, size) {
+	steps.push(function(next) {
+		job.current = nameOf(remote);
+		if (!isDir) {
+			job.things++;
+			job.bytes += size || 0;
+			var target = exists(local) ?
+				join(parentOf(local), freeName(parentOf(local), nameOf(local), false)) : local;
+			runCurl(site, ["-o", target, netUrl(site, remote)], function(code, err) {
+				job.doneThings++;
+				var st = stat(target);
+				job.doneBytes += st ? st.size : 0;
+				if (code !== 0 && !job.cancelled) {
+					try { fs.unlinkSync(target); } catch (e1) {}
+					jobError(remote, netWhyText(code, err));
+				}
+				next();
+			});
+			return;
+		}
+		job.things++;
+		var dir = local;
+		if (!exists(dir)) {
+			try {
+				fs.mkdirSync(dir, 493 /* 0755 */);
+			} catch (e2) {
+				jobError(remote, e2);
+				next();
+				return;
+			}
+		}
+		job.doneThings++;
+		netListOnce(site, remote, function(err, entries) {
+			if (err) {
+				jobError(remote, err);
+				next();
+				return;
+			}
+			var inner = [];
+			for (var i = 0; i < entries.length; i++) {
+				var e = entries[i];
+				netDownSteps(inner, site, remote === "/" ? "/" + e.n : remote + "/" + e.n,
+					join(dir, e.n), !!e.d, e.s);
+			}
+			Array.prototype.unshift.apply(job.steps, inner);
+			next();
+		});
+	});
+}
+
+// Steps that take one thing up to the site. A folder is made there if it is
+// not there already, and merged if it is; a name already taken gets a number.
+// (countSteps has already counted everything there is to send.)
+function netUpSteps(steps, site, from, remote, st) {
+	steps.push(function(next) {
+		job.current = nameOf(from);
+		if (!st.isDirectory()) {
+			runCurl(site, ["-T", from, netUrl(site, remote)], function(code, err) {
+				job.doneThings++;
+				job.doneBytes += st.isFile() ? st.size : 0;
+				if (code !== 0 && !job.cancelled) {
+					jobError(from, netWhyText(code, err));
+				}
+				next();
+			});
+			return;
+		}
+		job.doneThings++;
+		// The folder is made if it is not there (a failure to make it because
+		// it is already there is fine: it is merged, like a local copy).
+		runCurl(site, ["--max-time", "20", "-Q", "MKD " + remote, site.base], function() {
+			netListOnce(site, remote, function(err, entries) {
+				var taken = {};
+				if (!err) {
+					for (var i = 0; i < entries.length; i++) {
+						taken[entries[i].n.toLowerCase()] = true;
+					}
+				}
+				var names = [];
+				try {
+					names = fs.readdirSync(from);
+				} catch (e2) {
+					jobError(from, e2);
+				}
+				var inner = [];
+				for (var k = 0; k < names.length; k++) {
+					var s2 = stat(join(from, names[k]));
+					if (s2) {
+						var toName = freeNetName(taken, names[k], s2.isDirectory());
+						taken[toName.toLowerCase()] = true;
+						netUpSteps(inner, site, join(from, names[k]),
+							remote === "/" ? "/" + toName : remote + "/" + toName, s2);
+					}
+				}
+				Array.prototype.unshift.apply(job.steps, inner);
+				next();
+			});
+		});
+	});
+}
+
+// Steps that take one thing off the site: a folder is emptied first.
+function netDeleteSteps(steps, site, remote, isDir) {
+	steps.push(function(next) {
+		job.current = nameOf(remote);
+		if (!isDir) {
+			runCurl(site, ["--max-time", "20", "-Q", "DELE " + remote, site.base], function(code, err) {
+				job.doneThings++;
+				if (code !== 0 && !job.cancelled) {
+					jobError(remote, netWhyText(code, err));
+				}
+				next();
+			});
+			return;
+		}
+		netListOnce(site, remote, function(err, entries) {
+			if (err) {
+				jobError(remote, err);
+				next();
+				return;
+			}
+			var inner = [];
+			for (var i = 0; i < entries.length; i++) {
+				var e = entries[i];
+				netDeleteSteps(inner, site, remote === "/" ? "/" + e.n : remote + "/" + e.n, !!e.d);
+			}
+			// The folder itself goes once it is empty.
+			inner.push(function(next2) {
+				runCurl(site, ["--max-time", "20", "-Q", "RMD " + remote, site.base], function(code2, err2) {
+					job.doneThings++;
+					if (code2 !== 0 && !job.cancelled) {
+						jobError(remote, netWhyText(code2, err2));
+					}
+					next2();
+				});
+			});
+			Array.prototype.unshift.apply(job.steps, inner);
+			next();
+		});
+	});
+}
+
+// {op: copy|move|delete, net: id, paths, dest}: the same jobs as start, with
+// one side on the site. Copy brings things down when the paths are on the
+// site, and takes them up when the destination is; move does that and then
+// takes the source away, but only if every part arrived.
+function startNet(future, args, op) {
+	var site = nets[args.net];
+	if (!site) {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	var paths = args.paths || [];
+	var i;
+	var items = [];
+	var down = paths.length > 0 && isNetPath(paths[0]);
+
+	if (down) {
+		var dest = null;
+		if (op !== "delete") {
+			dest = cleanFolder(args.dest, args.system);
+			var dst = dest && stat(dest);
+			if (!dst || !dst.isDirectory()) {
+				return fail(future, "The folder to put them in could not be found.");
+			}
+		}
+		for (i = 0; i < paths.length; i++) {
+			if (!isNetPath(paths[i])) {
+				return fail(future, "Things from the site and from this TouchPad cannot go in one job.");
+			}
+			var rp = cleanNetPath(paths[i].substring(paths[i].indexOf("/", paths[i].indexOf("://") + 3)));
+			if (!rp || rp === "/") {
+				return fail(future, "That cannot be copied from the site.");
+			}
+			items.push({remote: rp, to: dest ? join(dest, nameOf(rp)) : ""});
+		}
+		if (!items.length) {
+			return fail(future, "Those could not be found. They may have been moved or deleted.");
+		}
+	} else {
+		if (op !== "copy" && op !== "move") {
+			return fail(future, "That cannot be done on the site.");
+		}
+		var updest = String(args.dest || "");
+		if (!isNetPath(updest)) {
+			return fail(future, "That folder is not on the site being shown.");
+		}
+		var upath = cleanNetPath(updest.substring(updest.indexOf("/", updest.indexOf("://") + 3)));
+		if (!upath) {
+			return fail(future, "That folder is not on the site being shown.");
+		}
+		for (i = 0; i < paths.length; i++) {
+			var p = clean(paths[i]);
+			var st = p && stat(p);
+			if (st) {
+				items.push({local: p, st: st, to: upath});
+			}
+		}
+		if (!items.length) {
+			return fail(future, "Those could not be found. They may have been moved or deleted.");
+		}
+	}
+
+	job = {
+		id: ++jobCount, op: op, finished: false, cancelled: false, stage: "counting",
+		bytes: 0, doneBytes: 0, things: 0, doneThings: 0, items: items.length, doneItems: 0, current: "",
+		failed: 0, firstError: "", sizes: {}
+	};
+	stayAwake();
+	var steps = [];
+	job.steps = steps;
+	log(op + " (net) started: " + items.length + " item(s)");
+
+	if (down) {
+		// First learn from each folder's listing what the things are (folders
+		// or files, and what the files weigh), then the work follows.
+		steps.push(function(next) {
+			job.stage = "working";
+			var byParent = {};
+			for (var m = 0; m < items.length; m++) {
+				var par = parentOf(items[m].remote) || "/";
+				(byParent[par] = byParent[par] || []).push(items[m]);
+			}
+			var parents = [];
+			for (var k in byParent) {
+				if (byParent.hasOwnProperty(k)) {
+					parents.push({path: k, items: byParent[k]});
+				}
+			}
+			var at = 0;
+			(function classify() {
+				if (job.cancelled || at >= parents.length) {
+					next();
+					return;
+				}
+				var group = parents[at++];
+				job.current = nameOf(group.path);
+				netListOnce(site, group.path, function(err, entries) {
+					if (err) {
+						jobError(group.path, err);
+						for (var q = 0; q < group.items.length; q++) {
+							jobError(group.items[q].remote, "the folder could not be listed");
+						}
+						classify();
+						return;
+					}
+					var known = {};
+					for (var i2 = 0; i2 < entries.length; i2++) {
+						known[entries[i2].n] = entries[i2];
+					}
+					var work = [];
+					for (var i3 = 0; i3 < group.items.length; i3++) {
+						var it = group.items[i3];
+						var found = known[nameOf(it.remote)];
+						if (!found) {
+							jobError(it.remote, "not on the server any more");
+							continue;
+						}
+						it.isDir = !!found.d;
+						if (op === "delete") {
+							netDeleteSteps(work, site, it.remote, it.isDir);
+						} else {
+							netDownSteps(work, site, it.remote, it.to, it.isDir, found.s || 0);
+						}
+					}
+					Array.prototype.unshift.apply(job.steps, work);
+					classify();
+				});
+			})();
+		});
+		// A move takes the source off the site only when every part arrived.
+		if (op === "move") {
+			steps.push(function(next) {
+				if (job.failed === 0 && !job.cancelled) {
+					var clean = [];
+					for (var c = 0; c < items.length; c++) {
+						// What is a folder was learned while classifying.
+						netDeleteSteps(clean, site, items[c].remote, !!items[c].isDir);
+					}
+					Array.prototype.unshift.apply(job.steps, clean);
+				}
+				next();
+			});
+		}
+	} else {
+		// Learn how much there is to send, so the bar can show real progress.
+		for (i = 0; i < items.length; i++) {
+			countSteps(steps, items[i].local, items[i].st, items[i].local);
+		}
+		// What is already in the folder on the site, so what goes up gets a
+		// name of its own when something is in the way ("Keep Both").
+		steps.push(function(next) {
+			netListOnce(site, upath, function(err, entries) {
+				job.stage = "working";
+				if (!err) {
+					var taken = {};
+					for (var t = 0; t < entries.length; t++) {
+						taken[entries[t].n.toLowerCase()] = true;
+					}
+					for (var t2 = 0; t2 < items.length; t2++) {
+						var nm = freeNetName(taken, nameOf(items[t2].local), items[t2].st.isDirectory());
+						taken[nm.toLowerCase()] = true;
+						items[t2].toName = nm;
+					}
+				}
+				next();
+			});
+		});
+		for (i = 0; i < items.length; i++) {
+			(function(it) {
+				var to = it.toName || nameOf(it.local);
+				netUpSteps(steps, site, it.local, it.to === "/" ? "/" + to : it.to + "/" + to, it.st);
+				steps.push(function(next) {
+					job.doneItems++;
+					next();
+				});
+			})(items[i]);
+		}
+		// A move takes the originals away only when every part arrived.
+		if (op === "move") {
+			steps.push(function(next) {
+				if (job.failed === 0 && !job.cancelled) {
+					for (var c = 0; c < items.length; c++) {
+						deleteSteps(steps, items[c].local, items[c].st);
+					}
+				}
+				next();
+			});
+		}
+	}
+
+	setTimeout(function() {
+		runSteps(steps, finish);
+	}, 10);
+	future.result = {returnValue: true, ok: true, id: job.id};
+	return future;
+}
+
 // ---- archives -----------------------------------------------------------------
 
 // Run 7za: once, or twice with the first one's output piped into the second.
@@ -1425,6 +2129,9 @@ startAssistant.prototype.run = function(future) {
 	if (op !== "copy" && op !== "move" && op !== "delete") {
 		return fail(future, "Unknown job.");
 	}
+	if (args.net) {
+		return startNet(future, args, op);
+	}
 	var paths = args.paths || [];
 	for (i = 0; i < paths.length; i++) {
 		// Anything may be copied from; only the storage may be taken from.
@@ -1559,6 +2266,12 @@ cancelAssistant.prototype.run = function(future) {
 		job.cancelled = true;
 		if (job.kill) {
 			job.kill();
+		}
+		// The transfers the job is running just now.
+		if (job.kids) {
+			for (var i = 0; i < job.kids.length; i++) {
+				try { job.kids[i].kill(); } catch (e) {}
+			}
 		}
 	}
 	future.result = snapshot();

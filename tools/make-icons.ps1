@@ -119,6 +119,14 @@ Draw-Arrow "back.png" @(19, 12, 5, 12, 5, 12, 11, 6, 5, 12, 11, 18)
 Draw-Arrow "forward.png" @(5, 12, 19, 12, 19, 12, 13, 6, 19, 12, 13, 18)
 Draw-Arrow "up.png" @(12, 19, 12, 5, 12, 5, 6, 11, 12, 5, 18, 11)
 
+# net.png: a globe, for typing a site address.
+$c = New-Canvas 24 24
+$pen = New-Object System.Drawing.Pen (Rgb 255 255 255), 1.6
+$c.G.DrawEllipse($pen, 3.5, 3.5, 17, 17)
+$c.G.DrawEllipse($pen, 8.5, 3.5, 7, 17)
+$c.G.DrawLine($pen, 4.5, 12, 19.5, 12)
+Save-Canvas $c "net.png"
+
 # check-off.png, check-on.png: the box beside each row while selecting.
 $c = New-Canvas 22 22
 $box = Round-Rect 1.5 1.5 19 19 3
