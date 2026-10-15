@@ -17,9 +17,10 @@ FM.setDeviceName = function(name) {
 };
 
 // Whether the window is too narrow for the folder tree beside the files: a
-// phone, not the TouchPad (1024 wide, 768 standing up).
+// phone, 720 wide square screens included, not the TouchPad (1024 wide, 768
+// standing up).
 FM.isNarrow = function() {
-	return (window.innerWidth || document.documentElement.clientWidth || 1024) < 700;
+	return (window.innerWidth || document.documentElement.clientWidth || 1024) < 760;
 };
 
 FM.log = function(msg) {
