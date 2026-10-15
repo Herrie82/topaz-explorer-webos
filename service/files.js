@@ -47,6 +47,9 @@ var FAT32MAX = 4294967295;
 // Tar archives that are also compressed: unpacked in two stages.
 var PACKED_TAR = /\.(tar\.(gz|bz2|xz|z)|tgz|tbz2?|txz)$/i;
 var LIVE = ["/proc", "/sys", "/dev"];
+// The device's short name for messages: "TouchPad" until the system says
+// otherwise (com.palm.properties.deviceNameShort; LuneOS gives each its own).
+var DEVICE = "TouchPad";
 // Left behind while this service has the system disk open for changes.
 var OPENED = "/tmp/.fm-system-open";
 
@@ -87,6 +90,20 @@ function fail(future, text) {
 	} catch (e) {
 		log("could not check the private bus pass: " + e);
 	}
+})();
+
+(function() {
+	var key = "com.palm.properties.deviceNameShort";
+	try {
+		IMPORTS.foundations.Comms.PalmCall.call("palm://com.palm.preferences/systemProperties/", "Get", {key: key})
+			.then(function(f) {
+				try {
+					if (f.result && f.result[key]) {
+						DEVICE = String(f.result[key]);
+					}
+				} catch (e2) {}
+			});
+	} catch (e) {}
 })();
 
 // ---- paths --------------------------------------------------------------------
@@ -300,7 +317,7 @@ listAssistant.prototype.run = function(future) {
 	var args = this.controller.args || {};
 	var path = clean(args.path);
 	if (!path) {
-		return fail(future, "That is not a folder on this TouchPad.");
+		return fail(future, "That is not a folder on this " + DEVICE + ".");
 	}
 	var names;
 	try {
@@ -1168,7 +1185,7 @@ function startArchive(future, args, op) {
 	var i;
 	if (!dest || !exists(dest)) {
 		return fail(future, args.system ? "Nothing can be put in this folder." :
-			"Archives can only be " + (op === "pack" ? "made" : "extracted") + " on the TouchPad's own storage, unless Allow System Changes is switched on.");
+			"Archives can only be " + (op === "pack" ? "made" : "extracted") + " on the " + DEVICE + "'s own storage, unless Allow System Changes is switched on.");
 	}
 
 	if (op === "extract") {
@@ -1226,7 +1243,7 @@ function startArchive(future, args, op) {
 					if (biggest > FAT32MAX && fatLimited(target) && !job.cancelled) {
 						// FAT32 cannot hold a file over 4 GB, so it would fail part way.
 						job.failed = 1;
-						job.note = "Something inside is over 4 GB, which is too big for the TouchPad's storage. It was not extracted.";
+						job.note = "Something inside is over 4 GB, which is too big for the " + DEVICE + "'s storage. It was not extracted.";
 						steps.length = 0;
 						if (folder) {
 							try { fs.rmdirSync(target); } catch (e5) {}
@@ -1331,7 +1348,7 @@ function startArchive(future, args, op) {
 			if (job.bytes > FAT32MAX && fatLimited(made)) {
 				// Even stored, this would make a file too big for FAT32.
 				job.failed = 1;
-				job.note = "That is over 4 GB, too big for a single file on the TouchPad's storage. Nothing was made.";
+				job.note = "That is over 4 GB, too big for a single file on the " + DEVICE + "'s storage. Nothing was made.";
 				next();
 				return;
 			}
@@ -1506,6 +1523,24 @@ statusAssistant.prototype.run = function(future) {
 };
 
 // Stop the job. What was already done stays done.
+// {} -> {}: stop the service. LuneOS's installer asks this of a package's
+// services before it replaces them, and gives up on the update if they do not
+// answer. A running job is cancelled; the service exits once it has answered.
+var quitAssistant = function() {};
+quitAssistant.prototype.run = function(future) {
+	if (job && !job.finished) {
+		job.cancelled = true;
+		if (job.kill) {
+			job.kill();
+		}
+	}
+	future.result = {returnValue: true, ok: true};
+	setTimeout(function() {
+		process.exit(0);
+	}, 200);
+	return future;
+};
+
 var cancelAssistant = function() {};
 cancelAssistant.prototype.run = function(future) {
 	if (job && !job.finished) {

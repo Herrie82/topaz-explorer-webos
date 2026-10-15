@@ -1,12 +1,20 @@
 /* Shared helpers: paths, kinds of file, sizes and dates, settings. */
 var FM = FM || {};
 
-// Two places to start from: the TouchPad's own storage, where things can be
+// Two places to start from: the device's own storage, where things can be
 // changed, and the whole system, which can only be looked at.
 FM.ROOT = "/media/internal";
+// The device's short name, "TouchPad" until the system says otherwise
+// (com.palm.properties.deviceNameShort; LuneOS gives each device its own).
+FM.DEVICE_NAME = "TouchPad";
 FM.ROOT_NAME = "My TouchPad";
 FM.SYSTEM = "/";
 FM.SYSTEM_NAME = "System";
+
+FM.setDeviceName = function(name) {
+	FM.DEVICE_NAME = name;
+	FM.ROOT_NAME = "My " + name;
+};
 
 FM.log = function(msg) {
 	try { console.log("[files] " + msg); } catch (e) {}
@@ -14,7 +22,7 @@ FM.log = function(msg) {
 
 // ---- paths ----
 
-// Whether a path is on the TouchPad's own storage.
+// Whether a path is on the device's own storage.
 FM.inStorage = function(path) {
 	return path === FM.ROOT || path.indexOf(FM.ROOT + "/") === 0;
 };

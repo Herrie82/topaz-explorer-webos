@@ -1,4 +1,4 @@
-/* The folder tree on the left: the TouchPad's storage and, below it, the whole
+/* The folder tree on the left: the device's storage and, below it, the whole
 	system; every folder, opened level by
 	level. Only the rows on screen exist; the tree itself is kept as plain data. */
 enyo.kind({
@@ -37,6 +37,12 @@ enyo.kind({
 		];
 		this.rows = this.roots.slice(0);
 		this.current = "";
+	},
+
+	// The storage's name changed (FM.setDeviceName): show the new one.
+	renameRoot: function() {
+		this.roots[0].name = FM.ROOT_NAME;
+		this.flatten();
 	},
 
 	hiddenChanged: function() {

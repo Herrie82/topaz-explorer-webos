@@ -59,6 +59,9 @@ with LuneOS's node 22 and its webOS service framework). Two things differ:
   reads RAR too). The 7za in this package is built for legacy webOS's
   soft-float ARM and cannot run there. Without 7-Zip, extracting and
   compressing say so; everything else works.
+- **The device's name** comes from the system
+  (`com.palm.properties.deviceNameShort`): "My Mindset", "My Q25"; on legacy
+  webOS, "My TouchPad" as before.
 - **"Allow System Changes"** leaves LuneOS's system disk as it is: it is
   writable already, so there is nothing to open, and closing does not make
   it read-only.

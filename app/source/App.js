@@ -119,6 +119,14 @@ enyo.kind({
 		this.showCrumbs();
 		this.showNav();
 		this.wake(0);
+		var self = this;
+		this.$.svc.deviceName(function(name) {
+			if (name && name !== FM.DEVICE_NAME) {
+				FM.setDeviceName(name);
+				self.$.tree.renameRoot();
+				self.showCrumbs();
+			}
+		});
 	},
 
 	// Wait for the file helper to answer, then show the first folder. Right after
@@ -344,7 +352,7 @@ enyo.kind({
 	// An archive was tapped: offer to unpack it.
 	askExtract: function(e) {
 		if (!this.canChange()) {
-			FM.banner("Copy the archive to My TouchPad to extract it");
+			FM.banner("Copy the archive to " + FM.ROOT_NAME + " to extract it");
 			return;
 		}
 		this.archive = e;
@@ -576,9 +584,10 @@ enyo.kind({
 			return;
 		}
 		this.$.confirmDialog.ask("Allow changes to system files?",
-			"Topaz Explorer will be able to rename, move, replace and delete anything on this TouchPad, " +
-			"including the files webOS needs to start. A mistake can leave the TouchPad unable to " +
-			"start until it is restored with webOS Doctor. This stays on until you switch it off or close Topaz Explorer.",
+			"Topaz Explorer will be able to rename, move, replace and delete anything on this " + FM.DEVICE_NAME + ", " +
+			"including the files webOS needs to start. A mistake can leave the " + FM.DEVICE_NAME + " unable to " +
+			"start until its system is restored (with webOS Doctor on legacy webOS). " +
+			"This stays on until you switch it off or close Topaz Explorer.",
 			"Allow", function() {
 				self.setSystem(true);
 			});
