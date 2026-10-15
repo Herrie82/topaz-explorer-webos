@@ -32,11 +32,15 @@ var KID_CHECKS = 400;      // entries looked at to learn whether a folder has fo
 
 // Folders that are not files on a disk: windows into the running system.
 // They can be looked at, but never searched, measured or copied.
-// The archiver: 7za from p7zip, with every format built in (native/build-7z.sh).
-// It is started through the system's program loader, which does not need the
-// file to be marked as a program: installing a package does not keep that mark.
+// The archiver. On legacy webOS: 7za from p7zip, with every format built in
+// (native/build-7z.sh), started through the system's program loader, which does
+// not need the file to be marked as a program: installing a package does not
+// keep that mark. That 7za is built for webOS's soft-float ARM, so on LuneOS,
+// which has neither that loader nor that ABI, the system's 7-Zip is used
+// instead: 7z (with RAR reading) or 7za, from the 7zip package.
 var SEVENZ = "/media/cryptofs/apps/usr/palm/services/com.palm.stark.files.service/bin/7za";
 var LOADER = "/lib/ld-linux.so.3";
+var SYSTEM_7Z = ["/usr/bin/7z", "/usr/bin/7za"];
 // The biggest a single file can be on the TouchPad's storage (FAT32): 4 GB less
 // one byte. An archive that would pass this, or a file inside one, is refused.
 var FAT32MAX = 4294967295;
@@ -66,6 +70,13 @@ function fail(future, text) {
 (function() {
 	var pass = "/var/palm/ls2/roles/prv/com.palm.stark.files.service.json";
 	var shut = /"outbound"\s*:\s*\[\s*\]/;
+	// LuneOS keeps no such files; its installer writes the service's rights
+	// itself, with outbound calls allowed.
+	try {
+		fs.statSync(pass);
+	} catch (e0) {
+		return;
+	}
 	try {
 		var text = fs.readFileSync(pass, "utf8");
 		if (shut.test(text)) {
@@ -202,6 +213,49 @@ function look(path) {
 
 function exists(path) {
 	return !!stat(path);
+}
+
+// The mount a path is on, from /proc/mounts: {dir, type, opts}, or null.
+function mountOf(path) {
+	var best = null;
+	var lines;
+	try {
+		lines = fs.readFileSync("/proc/mounts", "utf8").split("\n");
+	} catch (e) {
+		return null;
+	}
+	for (var i = 0; i < lines.length; i++) {
+		var f = lines[i].split(" ");
+		if (f.length < 4) {
+			continue;
+		}
+		var dir = f[1].replace(/\\040/g, " ");
+		var under = dir === "/" || path === dir || path.indexOf(dir + "/") === 0;
+		if (under && (!best || dir.length >= best.dir.length)) {
+			best = {dir: dir, type: f[2], opts: f[3].split(",")};
+		}
+	}
+	return best;
+}
+
+// Whether a file put at path is held to FAT's 4 GB. The TouchPad's storage is
+// FAT32; LuneOS's is not. Where it cannot be told, it is taken to be.
+function fatLimited(path) {
+	var m = mountOf(path);
+	return !m || /^(vfat|msdos|fat)$/.test(m.type);
+}
+
+// How to start the archiver: {program, args} (args before 7za's own), or null.
+function archiver() {
+	if (exists(LOADER) && exists(SEVENZ)) {
+		return {program: LOADER, args: [SEVENZ]};
+	}
+	for (var i = 0; i < SYSTEM_7Z.length; i++) {
+		if (exists(SYSTEM_7Z[i])) {
+			return {program: SYSTEM_7Z[i], args: []};
+		}
+	}
+	return null;
 }
 
 // "Photo.jpg" -> "Photo (2).jpg", for the first number not in use.
@@ -394,6 +448,9 @@ spaceAssistant.prototype.run = function(future) {
 	} catch (e) {
 		return fail(future, "The free space could not be read.");
 	}
+	child.on("error", function() {
+		fail(future, "The free space could not be read.");
+	});
 	child.stdout.on("data", function(d) { out += d.toString(); });
 	child.on("exit", function() {
 		// The numbers may sit on the line after a long device name.
@@ -567,12 +624,22 @@ unlockAssistant.prototype.run = function(future) {
 		future.result = {returnValue: true, ok: true, on: false};
 		return future;
 	}
+	var root = mountOf("/");
+	if (on && root && root.opts.indexOf("rw") >= 0) {
+		// Already writable (as on LuneOS): nothing to open, and so nothing for
+		// closing to make read-only afterwards.
+		future.result = {returnValue: true, ok: true, on: true};
+		return future;
+	}
 	var child;
 	try {
 		child = child_process.spawn("/bin/mount", ["-o", on ? "remount,rw" : "remount,ro", "/"]);
 	} catch (e) {
 		return fail(future, "The system disk could not be " + (on ? "opened." : "closed."));
 	}
+	child.on("error", function() {
+		fail(future, "The system disk could not be " + (on ? "opened." : "closed."));
+	});
 	child.on("exit", function(code) {
 		log("system disk " + (on ? "opened" : "closed") + " for changes: mount said " + code);
 		if (code !== 0) {
@@ -700,7 +767,7 @@ function copyFile(from, to, st, done) {
 		done(err);
 	}
 	try {
-		rs = fs.createReadStream(from, {bufferSize: CHUNK});
+		rs = fs.createReadStream(from, {bufferSize: CHUNK, highWaterMark: CHUNK});
 		ws = fs.createWriteStream(to);
 	} catch (e) {
 		done(e);
@@ -995,6 +1062,12 @@ function sevenZip(argLists, cwd, onLine, done) {
 		onLine(text);
 	}
 	function exited(code) {
+		if (this && this.ended) {
+			return;
+		}
+		if (this) {
+			this.ended = true;
+		}
 		worst = Math.max(worst, code === null || code === undefined ? 255 : code);
 		if (++ended === kids.length) {
 			job.kill = null;
@@ -1004,9 +1077,15 @@ function sevenZip(argLists, cwd, onLine, done) {
 			done(worst, errors);
 		}
 	}
+	var how = archiver();
+	if (!how) {
+		job.kill = null;
+		done(255, "No archiver");
+		return;
+	}
 	try {
 		for (var i = 0; i < argLists.length; i++) {
-			kids.push(child_process.spawn(LOADER, [SEVENZ].concat(argLists[i]), {cwd: cwd || "/"}));
+			kids.push(child_process.spawn(how.program, how.args.concat(argLists[i]), {cwd: cwd || "/"}));
 		}
 	} catch (e) {
 		done(255, String(e));
@@ -1017,6 +1096,12 @@ function sevenZip(argLists, cwd, onLine, done) {
 	for (var k = 0; k < kids.length; k++) {
 		kids[k].stderr.on("data", function(d) { errors += d.toString(); });
 		kids[k].on("exit", exited);
+		// A program that cannot be started: node reports it here, and without a
+		// listener the whole service would stop.
+		kids[k].on("error", function(e) {
+			errors += String(e) + "\n";
+			exited.call(this, 255);
+		});
 	}
 	// Nothing to type at: a question (a password, say) fails at once instead of waiting.
 	first.stdin.end();
@@ -1054,6 +1139,9 @@ function sevenZip(argLists, cwd, onLine, done) {
 
 // What to tell the person when 7za did not end cleanly. what: "extracted" or "made".
 function archiveNote(code, errors, what) {
+	if (/^No archiver/.test(errors)) {
+		return "There is no archiver on this device (7-Zip).";
+	}
 	if (/password|encrypted/i.test(errors)) {
 		job.password = true;
 		return "This archive needs a password.";
@@ -1135,7 +1223,7 @@ function startArchive(future, args, op) {
 				}, function(code, errors) {
 					// The first Path line is the archive itself.
 					job.things = Math.max(0, n - 1);
-					if (biggest > FAT32MAX && !job.cancelled) {
+					if (biggest > FAT32MAX && fatLimited(target) && !job.cancelled) {
 						// FAT32 cannot hold a file over 4 GB, so it would fail part way.
 						job.failed = 1;
 						job.note = "Something inside is over 4 GB, which is too big for the TouchPad's storage. It was not extracted.";
@@ -1240,7 +1328,7 @@ function startArchive(future, args, op) {
 		steps.push(function(next) {
 			job.stage = "working";
 			job.started = new Date().getTime();
-			if (job.bytes > FAT32MAX) {
+			if (job.bytes > FAT32MAX && fatLimited(made)) {
 				// Even stored, this would make a file too big for FAT32.
 				job.failed = 1;
 				job.note = "That is over 4 GB, too big for a single file on the TouchPad's storage. Nothing was made.";

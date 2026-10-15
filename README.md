@@ -50,6 +50,22 @@ Install the `.ipk` from the [releases page](../../releases) with WebOS Quick Ins
 It has been used on a TouchPad running webOS Community Edition 3.1.0. It is a first release:
 see [TODO.md](TODO.md) for what has been checked and what is known to be missing.
 
+## On LuneOS
+
+The same package installs and runs on LuneOS (tried on a mindphone, armv7,
+with LuneOS's node 22 and its webOS service framework). Two things differ:
+
+- **Archives** need LuneOS's 7-Zip (the `7zip` package: `/usr/bin/7z`, which
+  reads RAR too). The 7za in this package is built for legacy webOS's
+  soft-float ARM and cannot run there. Without 7-Zip, extracting and
+  compressing say so; everything else works.
+- **"Allow System Changes"** leaves LuneOS's system disk as it is: it is
+  writable already, so there is nothing to open, and closing does not make
+  it read-only.
+
+The 4 GB limit applies only where the storage is FAT, as on the TouchPad
+under legacy webOS.
+
 ## A word on what it is allowed to do
 
 Topaz Explorer runs its file service as root, outside the jail webOS puts other installed services in.
