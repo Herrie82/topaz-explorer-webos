@@ -205,14 +205,19 @@ FM.size = function(bytes) {
 	return (n >= 100 ? Math.round(n) : (n >= 10 ? n.toFixed(1) : n.toFixed(2))) + " " + units[u];
 };
 
-FM.when = function(ms) {
+// dayOnly leaves the time out, where the files are too narrow for it.
+FM.when = function(ms, dayOnly) {
 	if (!ms) {
 		return "";
 	}
 	var d = new Date(ms);
 	var h = d.getHours();
 	var m = d.getMinutes();
-	return (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear() + " " +
+	var day = (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear();
+	if (dayOnly) {
+		return day;
+	}
+	return day + " " +
 		(h % 12 || 12) + ":" + (m < 10 ? "0" : "") + m + " " + (h < 12 ? "AM" : "PM");
 };
 

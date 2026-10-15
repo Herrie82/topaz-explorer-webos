@@ -317,6 +317,7 @@ enyo.kind({
 		this.addRemoveClass("fm-compact", on);
 		if (this.path) {
 			this.showCrumbs();
+			this.showStatus();
 		}
 		if (on) {
 			this.showTree(false);
@@ -582,6 +583,11 @@ enyo.kind({
 
 	showStatus: function() {
 		var n = this.$.files.getCount();
+		// A phone's bar has room for the number and no more.
+		if (this.compact) {
+			this.$.status.setContent(String(n));
+			return;
+		}
 		var text = FM.count(n, "item");
 		if (this.free >= 0) {
 			text += "  ·  " + FM.size(this.free) + " free";

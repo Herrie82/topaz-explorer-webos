@@ -249,8 +249,9 @@ enyo.kind({
 		var width = node ? node.clientWidth : 0;
 		if (width) {
 			this.cols = Math.max(1, Math.min(FM.MAX_COLS, Math.floor(width / FM.CELL_WIDTH)));
-			// Too narrow for every column: the type goes first.
-			this.addRemoveClass("fm-narrow", width < 640);
+			// Too narrow for every column: the type goes first, and the time of day.
+			this.narrow = width < 640;
+			this.addRemoveClass("fm-narrow", this.narrow);
 			// A phone standing up: the date goes too, so the name keeps its room.
 			this.addRemoveClass("fm-tight", width < 400);
 		}
@@ -259,9 +260,12 @@ enyo.kind({
 	resizeHandler: function() {
 		this.inherited(arguments);
 		var before = this.cols;
+		var wasNarrow = this.narrow;
 		this.measureCols();
 		if (before !== this.cols && this.view === "icons") {
 			this.redraw(true);
+		} else if (wasNarrow !== this.narrow && this.view !== "icons") {
+			this.redraw(false);
 		}
 	},
 
@@ -294,7 +298,7 @@ enyo.kind({
 		this.$.name.setContent(e.n);
 		this.$.where.setShowing(this.results);
 		this.$.where.setContent(this.results ? FM.place(e.p) : "");
-		this.$.date.setContent(FM.when(e.m));
+		this.$.date.setContent(FM.when(e.m, this.narrow));
 		this.$.type.setContent(e.type);
 		this.$.size.setContent(e.d ? "" : FM.size(e.s));
 		return true;
