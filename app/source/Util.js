@@ -16,6 +16,17 @@ FM.setDeviceName = function(name) {
 	FM.ROOT_NAME = "My " + name;
 };
 
+// The app's own name, as the file service gives it: LuneOS Explorer on LuneOS,
+// where "Topaz" (the TouchPad's name while it was being made) means nothing.
+FM.APP_NAME = "Topaz Explorer";
+// Running on LuneOS, as the file service says.
+FM.LUNEOS = false;
+
+FM.setAppName = function(name) {
+	FM.APP_NAME = name;
+	document.title = name;
+};
+
 // Whether the window is too narrow for the folder tree beside the files: a
 // phone, 720 wide square screens included, not the TouchPad (1024 wide, 768
 // standing up).
@@ -102,6 +113,10 @@ FM.fileUrl = function(path) {
 
 // A small picture of an image file, made by the system. For a style rule.
 FM.thumbUrl = function(path, px) {
+	// LuneOS's web engine has no extractfs: the picture itself, scaled by CSS.
+	if (FM.LUNEOS) {
+		return "url('" + FM.fileUrl(path).replace(/'/g, "%27") + "')";
+	}
 	return "url('/var/luna/data/extractfs" + encodeURIComponent(path).replace(/'/g, "%27") +
 		":0:0:" + px + ":" + px + ":3')";
 };

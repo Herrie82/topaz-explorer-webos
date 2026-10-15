@@ -52,8 +52,19 @@ see [TODO.md](TODO.md) for what has been checked and what is known to be missing
 
 ## On LuneOS
 
-The same package installs and runs on LuneOS (tried on a mindphone, armv7,
-with LuneOS's node 22 and its webOS service framework). Two things differ:
+The same app runs on LuneOS (tried on a mindphone and a Samsung SM-T520,
+armv7, and a Q25, aarch64, with LuneOS's node 22 and its webOS service
+framework). There it is **LuneOS Explorer**: "Topaz" means nothing outside
+the TouchPad. `tools/pack-luneos.sh` makes its package: the same files, with
+that title, marked trusted (LuneOS's web runtime shows files from
+`/media` only to trusted apps, so the pictures would stay blank), and
+without the legacy webOS 7za. The app and its service find out for
+themselves that they run on LuneOS (`/etc/luneos-release`) and use the name
+in what they say.
+
+Phones, the Q25's square screen included, show the files or the folders in
+turn, each across the screen; the TouchPad and other tablets keep them side
+by side. What else differs:
 
 - **Archives** need LuneOS's 7-Zip (the `7zip` package: `/usr/bin/7z`, which
   reads RAR too). The 7za in this package is built for legacy webOS's

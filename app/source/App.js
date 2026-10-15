@@ -144,6 +144,10 @@ enyo.kind({
 				return;
 			}
 			self.awake = true;
+			if (r.app) {
+				FM.setAppName(r.app);
+			}
+			FM.LUNEOS = !!r.luneos;
 			// Should an earlier run have left the system disk open, close it.
 			self.$.svc.ask("unlock", {on: false}, function() {});
 			self.$.files.showNote("");
@@ -157,7 +161,7 @@ enyo.kind({
 				return;
 			}
 			if (tries >= 8) {
-				self.$.files.showNote("The file helper did not start. Close Topaz Explorer and open it again.");
+				self.$.files.showNote("The file helper did not start. Close " + FM.APP_NAME + " and open it again.");
 				return;
 			}
 			self.wake(tries + 1);
@@ -650,10 +654,10 @@ enyo.kind({
 			return;
 		}
 		this.$.confirmDialog.ask("Allow changes to system files?",
-			"Topaz Explorer will be able to rename, move, replace and delete anything on this " + FM.DEVICE_NAME + ", " +
+			FM.APP_NAME + " will be able to rename, move, replace and delete anything on this " + FM.DEVICE_NAME + ", " +
 			"including the files webOS needs to start. A mistake can leave the " + FM.DEVICE_NAME + " unable to " +
 			"start until its system is restored (with webOS Doctor on legacy webOS). " +
-			"This stays on until you switch it off or close Topaz Explorer.",
+			"This stays on until you switch it off or close " + FM.APP_NAME + ".",
 			"Allow", function() {
 				self.setSystem(true);
 			});
@@ -1000,7 +1004,7 @@ enyo.kind({
 		} else if (s.ok && s.note) {
 			FM.banner(s.note);
 		} else if (!s.ok) {
-			FM.banner("Topaz Explorer lost touch with its helper; check what was " + did);
+			FM.banner(FM.APP_NAME + " lost touch with its helper; check what was " + did);
 		} else if (s.failed) {
 			FM.banner(FM.count(s.failed, "item") + " could not be " + did + (s.firstError ? ", \"" + s.firstError + "\" among them" : ""));
 		} else if (s.cancelled) {

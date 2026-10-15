@@ -50,6 +50,15 @@ var LIVE = ["/proc", "/sys", "/dev"];
 // The device's short name for messages: "TouchPad" until the system says
 // otherwise (com.palm.properties.deviceNameShort; LuneOS gives each its own).
 var DEVICE = "TouchPad";
+// Whether this is LuneOS, and the app's name in messages: there it is LuneOS
+// Explorer, as "Topaz" (the TouchPad's name while it was being made) means
+// nothing there.
+var LUNEOS = false;
+try {
+	fs.statSync("/etc/luneos-release");
+	LUNEOS = true;
+} catch (eName) {}
+var APP_NAME = LUNEOS ? "LuneOS Explorer" : "Topaz Explorer";
 // Left behind while this service has the system disk open for changes.
 var OPENED = "/tmp/.fm-system-open";
 
@@ -1167,7 +1176,7 @@ function archiveNote(code, errors, what) {
 		return "The disk is full.";
 	}
 	if (/Can ?not open .* as archive|is not archive|Unsupported/i.test(errors)) {
-		return "That is not an archive Topaz Explorer can read.";
+		return "That is not an archive " + APP_NAME + " can read.";
 	}
 	return code === 1 ? "Some of it could not be " + what + "." : "The archive could not be " + what + ".";
 }
@@ -1408,7 +1417,7 @@ startAssistant.prototype.run = function(future) {
 	var i;
 
 	if (job && !job.finished) {
-		return fail(future, "Topaz Explorer is still busy with the last thing you asked for.");
+		return fail(future, APP_NAME + " is still busy with the last thing you asked for.");
 	}
 	if (op === "extract" || op === "pack") {
 		return startArchive(future, args, op);
@@ -1518,7 +1527,10 @@ startAssistant.prototype.run = function(future) {
 // -> how the job is getting on (see snapshot).
 var statusAssistant = function() {};
 statusAssistant.prototype.run = function(future) {
-	future.result = snapshot();
+	var r = snapshot();
+	r.app = APP_NAME;    // the app takes its name from here
+	r.luneos = LUNEOS;
+	future.result = r;
 	return future;
 };
 
