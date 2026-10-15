@@ -16,6 +16,12 @@ FM.setDeviceName = function(name) {
 	FM.ROOT_NAME = "My " + name;
 };
 
+// Whether the window is too narrow for the folder tree beside the files: a
+// phone, not the TouchPad (1024 wide, 768 standing up).
+FM.isNarrow = function() {
+	return (window.innerWidth || document.documentElement.clientWidth || 1024) < 700;
+};
+
 FM.log = function(msg) {
 	try { console.log("[files] " + msg); } catch (e) {}
 };

@@ -251,6 +251,8 @@ enyo.kind({
 			this.cols = Math.max(1, Math.min(FM.MAX_COLS, Math.floor(width / FM.CELL_WIDTH)));
 			// Too narrow for every column: the type goes first.
 			this.addRemoveClass("fm-narrow", width < 640);
+			// A phone standing up: the date goes too, so the name keeps its room.
+			this.addRemoveClass("fm-tight", width < 400);
 		}
 	},
 

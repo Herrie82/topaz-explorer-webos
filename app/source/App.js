@@ -22,7 +22,7 @@ enyo.kind({
 
 				{kind: "HFlexBox", flex: 1, components: [
 					{name: "tree", kind: "FM.Tree", onPick: "treePick"},
-					{kind: "VFlexBox", flex: 1, components: [
+					{name: "filesBox", kind: "VFlexBox", flex: 1, components: [
 						{name: "searchBar", kind: "HFlexBox", align: "center", className: "fm-searchbar", showing: false, components: [
 							{name: "searchNote", flex: 1, className: "fm-one-line"},
 							{name: "deep", kind: "Button", caption: "Search Subfolders", onclick: "deepSearch"}
@@ -34,7 +34,7 @@ enyo.kind({
 
 				// The bar when nothing is selected...
 				{name: "bar", kind: "HFlexBox", align: "center", className: "fm-bottom", components: [
-					{kind: "Button", caption: "Folders", className: "enyo-button-dark", onclick: "toggleTree"},
+					{name: "foldersBtn", kind: "Button", caption: "Folders", className: "enyo-button-dark", onclick: "toggleTree"},
 					{name: "newBtn", kind: "Button", caption: "New Folder", className: "enyo-button-dark", onclick: "newFolder"},
 					{name: "paste", kind: "Button", caption: "Paste", className: "enyo-button-blue", onclick: "paste", showing: false},
 					{name: "status", flex: 1, className: "fm-status"},
@@ -100,6 +100,9 @@ enyo.kind({
 		this.awake = false;
 		this.hidden = FM.pref("hidden", "0") === "1";
 		this.treeShown = FM.pref("tree", "1") === "1";
+		// On a narrow screen (a phone) the folders and the files take turns at
+		// the whole width; see setCompact.
+		this.compact = false;
 	},
 
 	rendered: function() {
@@ -114,6 +117,7 @@ enyo.kind({
 		this.$.files.setHidden(this.hidden);
 		this.$.tree.setHidden(this.hidden);
 		this.$.tree.setShowing(this.treeShown);
+		this.setCompact(FM.isNarrow());
 		this.showChoices();
 		this.path = FM.ROOT;
 		this.showCrumbs();
@@ -294,6 +298,54 @@ enyo.kind({
 
 	treePick: function(inSender, path) {
 		this.go(path);
+		if (this.compact) {
+			// The folder is chosen: its files take the screen.
+			this.showTree(false);
+		}
+	},
+
+	// Narrow (a phone): the folder tree and the files are shown one at a time,
+	// each across the whole screen, starting with the files; back and Folders
+	// go to the folders, back again (or picking one) to the files. Wide (the
+	// TouchPad): side by side, the tree shown or hidden as last chosen.
+	setCompact: function(on) {
+		if (on === this.compact) {
+			return;
+		}
+		this.compact = on;
+		this.$.tree.addRemoveClass("fm-tree-full", on);
+		this.addRemoveClass("fm-compact", on);
+		if (this.path) {
+			this.showCrumbs();
+		}
+		if (on) {
+			this.showTree(false);
+		} else {
+			this.treeShown = FM.pref("tree", "1") === "1";
+			this.$.tree.setShowing(this.treeShown);
+			this.$.filesBox.setShowing(true);
+			this.$.foldersBtn.setCaption("Folders");
+			this.resized();
+		}
+	},
+
+	// Compact only: the folders or the files.
+	showTree: function(on) {
+		this.treeShown = on;
+		this.$.foldersBtn.setCaption(on ? "Files" : "Folders");
+		this.$.tree.setShowing(on);
+		this.$.filesBox.setShowing(!on);
+		if (on) {
+			this.$.tree.reveal(this.path);
+		}
+		this.resized();
+	},
+
+	resizeHandler: function() {
+		this.inherited(arguments);
+		if (this.begun) {
+			this.setCompact(FM.isNarrow());
+		}
 	},
 
 	crumbClick: function(inSender) {
@@ -307,6 +359,9 @@ enyo.kind({
 			this.closeEditor(this, this.$.editor.isChanged());
 		} else if (this.$.files.selecting) {
 			this.doneSelecting();
+		} else if (this.compact) {
+			// On a phone, back goes to the folders, and from there back to the files.
+			this.showTree(!this.treeShown);
 		} else if (this.backs.length) {
 			this.goBack();
 		} else {
@@ -504,7 +559,8 @@ enyo.kind({
 	// The path as folders to tap. A long path keeps its last few.
 	showCrumbs: function() {
 		var trail = FM.trail(this.path);
-		var keep = 4;
+		// A phone has room for the folder it is in, with "…" for the one above.
+		var keep = this.compact ? 1 : 4;
 		var from = Math.max(0, trail.length - keep);
 		var c = this.$.crumbs;
 		c.destroyControls();
@@ -562,6 +618,10 @@ enyo.kind({
 	},
 
 	toggleTree: function() {
+		if (this.compact) {
+			this.showTree(!this.treeShown);
+			return;
+		}
 		this.treeShown = !this.treeShown;
 		this.$.tree.setShowing(this.treeShown);
 		FM.setPref("tree", this.treeShown ? "1" : "0");
