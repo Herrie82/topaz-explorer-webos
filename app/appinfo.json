@@ -8,5 +8,6 @@
 	"icon": "images/icon.png",
 	"splashicon": "images/icon-256x256.png",
 	"uiRevision": 2,
-	"keywords": ["Topaz Explorer", "Files", "Explorer", "Folders", "File Manager"]
+	"keywords": ["Topaz Explorer", "Files", "Explorer", "Folders", "File Manager"],
+	"requiredPermissions": ["application.launcher", "appmanager.management", "preferences.systempropertyquery"]
 }

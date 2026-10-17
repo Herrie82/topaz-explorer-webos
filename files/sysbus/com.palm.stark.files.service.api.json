@@ -1,0 +1,9 @@
+{
+    "applicationinstall.interface": [
+        "com.palm.stark.files.service/info",
+        "com.palm.stark.files.service/quit"
+    ],
+    "com.palm.stark.files.service.group": [
+        "com.palm.stark.files.service/*"
+    ]
+}

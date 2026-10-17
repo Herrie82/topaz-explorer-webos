@@ -1,0 +1,12 @@
+{
+    "appId": "com.palm.stark.files.service",
+    "type": "regular",
+    "allowedNames": ["com.palm.stark.files.service"],
+    "trustLevel": "oem",
+    "permissions": [
+        {
+            "service": "com.palm.stark.files.service",
+            "outbound": ["*"]
+        }
+    ]
+}
