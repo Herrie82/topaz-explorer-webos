@@ -126,6 +126,26 @@ $c.G.DrawLine($cable, 24, 28, 24, 37)
 $c.G.DrawLine($cable, 10, 38, 38, 38)
 Save-Canvas $c "netdrive.png"
 
+# cloud.png: a cloud, for Google Drive in the folder tree; cloud-32x32.png and
+# cloud-48x48.png are the same for the Google Drive account in Accounts.
+function Draw-Cloud([int]$size, [string]$path) {
+    $c = New-Canvas $size $size
+    $k = $size / 48.0
+    $fill = New-Object System.Drawing.SolidBrush (Rgb 86 150 222)
+    $c.G.FillEllipse($fill, [single](6 * $k), [single](20 * $k), [single](16 * $k), [single](16 * $k))
+    $c.G.FillEllipse($fill, [single](13 * $k), [single](10 * $k), [single](22 * $k), [single](22 * $k))
+    $c.G.FillEllipse($fill, [single](26 * $k), [single](17 * $k), [single](17 * $k), [single](17 * $k))
+    $c.G.FillRectangle($fill, [single](14 * $k), [single](24 * $k), [single](21 * $k), [single](12 * $k))
+    $c.G.Dispose()
+    $c.Bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $c.Bmp.Dispose()
+}
+$accountImages = Join-Path (Split-Path $PSScriptRoot -Parent) "service\account\images"
+New-Item -ItemType Directory -Force $accountImages | Out-Null
+Draw-Cloud 48 (Join-Path $out "cloud.png")
+Draw-Cloud 32 (Join-Path $accountImages "cloud-32x32.png")
+Draw-Cloud 48 (Join-Path $accountImages "cloud-48x48.png")
+
 # back.png, forward.png, up.png: white arrows for the dark bar.
 function Draw-Arrow([string]$name, [single[]]$pts) {
     $c = New-Canvas 24 24

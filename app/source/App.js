@@ -5,8 +5,10 @@ enyo.kind({
 	kind: enyo.VFlexBox,
 	className: "fm-app",
 	components: [
-		{kind: "ApplicationEvents", onBack: "backGesture", onWindowParamsChange: "windowParamsChanged"},
+		{kind: "ApplicationEvents", onBack: "backGesture", onWindowParamsChange: "windowParamsChanged",
+			onWindowActivated: "windowActivated"},
 		{name: "svc", kind: "FM.Service"},
+		{name: "accountResult", kind: "CrossAppResult"},
 
 		{name: "pane", kind: "Pane", flex: 1, transitionKind: "enyo.transitions.Simple", components: [
 			{name: "browse", kind: "VFlexBox", components: [
@@ -61,7 +63,18 @@ enyo.kind({
 				]}
 			]},
 			{name: "viewer", kind: "FM.Viewer", onClose: "closeViewer"},
-			{name: "editor", kind: "FM.Editor", onClose: "closeEditor", onSave: "saveText"}
+			{name: "editor", kind: "FM.Editor", onClose: "closeEditor", onSave: "saveText"},
+			// Inside Accounts: signing a Google Drive account in through Atlas.
+			{name: "driveSign", kind: "VFlexBox", className: "fm-drive-sign", components: [
+				{name: "driveTitle", className: "fm-drive-title", content: "Google Drive"},
+				{name: "driveText", className: "fm-drive-text"},
+				{name: "driveProblem", className: "fm-dialog-problem", showing: false},
+				{kind: "HFlexBox", className: "fm-drive-buttons", components: [
+					{name: "driveAtlas", kind: "Button", caption: "Open Atlas", flex: 1, onclick: "driveAtlasClick"},
+					{name: "driveGo", kind: "Button", caption: "Connect", flex: 1, className: "enyo-button-affirmative",
+						onclick: "driveConnectClick"}
+				]}
+			]}
 		]},
 
 		// lazy: false, so the menu's items exist before it is first opened.
@@ -129,6 +142,12 @@ enyo.kind({
 			return;
 		}
 		this.begun = true;
+		var params = enyo.windowParams || {};
+		if (params.template || params.account) {
+			// Opened by Accounts to sign a Google Drive account in.
+			this.driveSignIn(params);
+			return;
+		}
 		// Pictures on a site are brought down one at a time as they are shown.
 		var self = this;
 		this.$.viewer.fetcher = function(e, done) {
@@ -173,6 +192,7 @@ enyo.kind({
 			FM.LUNEOS = !!r.luneos;
 			// Should an earlier run have left the system disk open, close it.
 			self.$.svc.ask("unlock", {on: false}, function() {});
+			self.showDriveAccounts();
 			self.$.files.showNote("");
 			self.path = "";
 			if (!self.launched(enyo.windowParams || {})) {
@@ -193,6 +213,14 @@ enyo.kind({
 			}
 			self.wake(tries + 1);
 		}, 2500);
+	},
+
+	// Back in front: a Google Drive account may have been added or removed in
+	// Accounts meanwhile.
+	windowActivated: function() {
+		if (this.awake) {
+			this.showDriveAccounts();
+		}
 	},
 
 	windowParamsChanged: function() {
@@ -621,6 +649,68 @@ enyo.kind({
 		});
 	},
 
+	// ---- Google Drive ----
+
+	// A Google Drive account in Accounts puts Drive in the folder tree.
+	showDriveAccounts: function() {
+		var self = this;
+		this.$.svc.ask("driveAccounts", {}, function(r) {
+			var list = r.ok ? r.accounts || [] : [];
+			self.$.tree.setClouds(list.length ? [{name: "Google Drive", path: "gdrive://drive"}] : []);
+		});
+	},
+
+	// Accounts opened this page to add a Google Drive account, or to show one.
+	driveSignIn: function(params) {
+		this.driveMode = params.mode || "create";
+		this.driveSent = false;
+		this.$.pane.selectViewByName("driveSign");
+		if (this.driveMode === "modify") {
+			var who = params.account && params.account.username || "";
+			this.$.driveText.setContent("Signed in" + (who ? " as " + who : "") + " through Atlas. " + FM.APP_NAME +
+				" uses the Google sign-in Atlas has; signing out of Google in Atlas signs this out too. " +
+				"To stop using it here, remove the account.");
+			this.$.driveGo.hide();
+			return;
+		}
+		this.$.driveText.setContent("Google Drive uses the Google sign-in in the Atlas browser.<br><br>" +
+			"1. Tap Open Atlas and sign in to Google there (it opens drive.google.com).<br>" +
+			"2. Come back here and tap Connect.<br><br>" +
+			"Your files then show up in " + FM.APP_NAME + "'s folder list. Nothing is sent anywhere but Google.");
+	},
+
+	driveAtlasClick: function() {
+		this.$.svc.launchApp("org.webosports.app.atlas", {url: "https://drive.google.com/drive/my-drive"}, function(r) {
+			if (!r.ok) {
+				FM.banner("Atlas is needed: install it from the App Museum or Preware");
+			}
+		});
+	},
+
+	driveConnectClick: function() {
+		var self = this;
+		this.$.driveGo.setDisabled(true);
+		this.$.driveProblem.hide();
+		this.$.svc.ask("driveCheck", {}, function(r) {
+			self.$.driveGo.setDisabled(false);
+			if (!r.ok) {
+				self.$.driveProblem.setContent(r.error);
+				self.$.driveProblem.show();
+				return;
+			}
+			if (self.driveSent) {
+				return;
+			}
+			self.driveSent = true;
+			self.$.accountResult.sendResult({
+				returnValue: true,
+				username: r.email,
+				alias: "Google Drive",
+				credentials: {common: {atlas: "true"}}
+			});
+		});
+	},
+
 	// ---- favorites ----
 
 	// Add the folder being shown to Favorites, or take it away. A site's
@@ -696,7 +786,7 @@ enyo.kind({
 			return FM.nameOf(path);
 		}
 		var root = FM.netRootOf(path);
-		var host = root.replace(/^[a-z]+:\/\//i, "");
+		var host = FM.netKind(path) === "GDRIVE" ? "Google Drive" : root.replace(/^[a-z]+:\/\//i, "");
 		return path === root ? host : FM.nameOf(path) + " on " + host;
 	},
 
@@ -1044,7 +1134,7 @@ enyo.kind({
 			text += "  ·  " + FM.size(this.free) + " free";
 		}
 		if (FM.isNet(this.path)) {
-			text += this.siteFor(this.path) ? "  ·  " + FM.netKind(this.path) : "";
+			text += this.siteFor(this.path) ? "  ·  " + (FM.netKind(this.path) === "GDRIVE" ? "Google Drive" : FM.netKind(this.path)) : "";
 		} else if (!FM.inStorage(this.path)) {
 			text += this.canChange() ? "  ·  System files: changes allowed" : "  ·  Read-only";
 		}

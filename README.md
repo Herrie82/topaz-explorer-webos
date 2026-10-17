@@ -53,6 +53,17 @@ and a tappable path across the top. It reaches the whole system, not only the US
 - "Add to Favorites" in the app menu puts the folder (or site, with its
   sign-in) at the top of the folder tree.
 
+**Google Drive**
+- Add a "Google Drive" account in Accounts (Add an Account). It uses the Google
+  sign-in in the Atlas browser: sign in at drive.google.com in Atlas, then tap
+  Connect. Google Drive then shows in the folder tree, and works like the other
+  network folders. Deleting puts things in Drive's trash. Google Docs, Sheets,
+  Slides and Drawings come down as .docx, .xlsx, .pptx and .pdf.
+- It talks to Drive the way drive.google.com does, with Atlas's cookies, which
+  are read on the TouchPad each time Drive is opened and never sent anywhere
+  but Google. Signing out of Google in Atlas signs Drive out too. As it is not
+  Google's published API, a change on Google's side can break it.
+
 **Sharing**
 - "Share Over FTP" in the app menu lets other computers open the TouchPad's
   storage with a name and password, optionally read-only. It keeps going when

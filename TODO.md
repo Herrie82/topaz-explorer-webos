@@ -51,6 +51,29 @@ Not yet: active-mode FTP from a client behind its own firewall did not connect
 anything staged needs room for it on the storage, and FAT's 4 GB limit
 applies to each file going through.
 
+## Google Drive, 2026-10-17
+
+A "Google Drive" account template (service/account, put in place by the
+service on its first start; DOCUMENTS capability, like HP's Dropbox one) whose
+sign-in page is the app itself: Open Atlas, then Connect (driveCheck). The
+service reads Atlas's google.com cookies from /var/atlas252/webkit-data/
+cookies.db with sqlite3 at each open, takes the API key from the Drive page,
+and uses clients6.google.com/drive/v2internal with a SAPISIDHASH header;
+downloads come from drive.usercontent.google.com, Google's own documents are
+exported. The public v3 API refuses cookies. Paths are made from names (a
+repeated name gets a number); ids are kept as folders are listed.
+
+Checked on the TouchPad through the service: sign-in check, listing, new
+folder, upload (700 KB, checksums match on the way back), download, rename,
+move between folders (no download), replacing a file's contents, delete to
+trash. The account was added in Accounts by the user and Drive showed in the
+tree.
+
+Not yet: Shared with me and shared drives; more than one Google account
+(Atlas's first one is used); progress within a single Drive transfer;
+exporting a Google document as anything but its Office kind. Unofficial API:
+expect to adjust it when Google changes the web client.
+
 ## Checked on the TouchPad (2026-10-10)
 
 By screenshot: details list, icons view with photo thumbnails, folder tree, path bar, a system

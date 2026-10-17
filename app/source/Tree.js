@@ -41,9 +41,20 @@ enyo.kind({
 		// The Favorites heading and the places under it (FM.favorites).
 		this.favHead = {name: "Favorites", depth: 0, open: true, head: true, hasKids: true};
 		this.favs = [];
+		// Cloud drives from Accounts (Google Drive): [{name, path}], shown after Favorites.
+		this.clouds = [];
 		this.rows = this.roots.slice(0);
 		this.current = "";
 		this.setFavorites(FM.favorites());
+	},
+
+	// The cloud drives to show: [{name, path}].
+	setClouds: function(list) {
+		this.clouds = [];
+		for (var i = 0; i < list.length; i++) {
+			this.clouds.push({path: list[i].path, name: list[i].name, depth: 0, cloud: true, hasKids: false});
+		}
+		this.flatten();
 	},
 
 	// The places to show under Favorites: [{name, path}].
@@ -141,6 +152,7 @@ enyo.kind({
 				rows.push.apply(rows, this.favs);
 			}
 		}
+		rows.push.apply(rows, this.clouds);
 		add(this.roots[0]);
 		add(this.roots[1]);
 		this.rows = rows;
@@ -224,6 +236,8 @@ enyo.kind({
 		var icon = "";
 		if (node.head) {
 			icon = " fm-tree-icon-star";
+		} else if (node.cloud) {
+			icon = " fm-tree-icon-cloud";
 		} else if (node.fav) {
 			icon = FM.isNet(node.path) ? " fm-tree-icon-net" : "";
 		} else if (node.depth === 0) {

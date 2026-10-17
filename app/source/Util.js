@@ -70,7 +70,7 @@ FM.trail = function(path) {
 	if (FM.isNet(path)) {
 		// A site address walks its own way: the address, then each folder.
 		var netRoot = FM.netRootOf(path);
-		var net = [{name: netRoot.replace(/^[a-z]+:\/\//i, ""), path: netRoot}];
+		var net = [{name: FM.netKind(path) === "GDRIVE" ? "Google Drive" : netRoot.replace(/^[a-z]+:\/\//i, ""), path: netRoot}];
 		var rest = path.substring(netRoot.length).split("/");
 		var netAt = netRoot;
 		for (var j = 0; j < rest.length; j++) {
@@ -139,14 +139,14 @@ FM.thumbUrl = function(path, px) {
 
 // Whether a path is a folder or file on a site (FTP, FTPS, SFTP or SMB).
 FM.isNet = function(path) {
-	return /^(ftps?|sftp|smb):\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb|gdrive):\/\//i.test(String(path || ""));
 };
 
 // The parts of a site address, or null: {scheme, host, port, user, pass, domain, start}.
 // The name and password, when the address carries them, are taken plainly; an
 // SMB name may carry its domain, "DOMAIN;name" or "DOMAIN\name".
 FM.parseNet = function(url) {
-	var m = /^(ftps?|sftp|smb):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i
+	var m = /^(ftps?|sftp|smb|gdrive):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i
 		.exec(String(url || "").replace(/^\s+|\s+$/g, ""));
 	if (!m) {
 		return null;
@@ -180,13 +180,13 @@ FM.netRoot = function(parts) {
 
 // The site part of a path on a site: "smb://nas/Music/x" -> "smb://nas".
 FM.netRootOf = function(path) {
-	var m = /^((?:ftps?|sftp|smb):\/\/[^\/]+)/i.exec(String(path || ""));
+	var m = /^((?:ftps?|sftp|smb|gdrive):\/\/[^\/]+)/i.exec(String(path || ""));
 	return m ? m[1] : "";
 };
 
 // What kind of site a path is on, for the status bar: "FTP", "SFTP", "SMB".
 FM.netKind = function(path) {
-	var m = /^(ftps?|sftp|smb):/i.exec(String(path || ""));
+	var m = /^(ftps?|sftp|smb|gdrive):/i.exec(String(path || ""));
 	return m ? m[1].toUpperCase() : "";
 };
 

@@ -1168,7 +1168,7 @@ function writeConf(name, value) {
 // "DOMAIN\name".
 function parseNet(url) {
 	url = String(url || "").replace(/^\s+|\s+$/g, "");
-	var m = /^(ftps?|sftp|smb):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
+	var m = /^(ftps?|sftp|smb|gdrive):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
 	if (!m) {
 		return null;
 	}
@@ -1195,7 +1195,7 @@ function parseNet(url) {
 
 // Whether a path an app sent is a folder or file on a site.
 function isNetPath(path) {
-	return /^(ftps?|sftp|smb):\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb|gdrive):\/\//i.test(String(path || ""));
 }
 
 // The path on the site of a full address: "ftp://host/a/b" -> "/a/b".
@@ -1618,6 +1618,10 @@ function netToolWhy(err) {
 // Each done(errorText, ...) gets "" when it worked.
 
 function siteList(site, path, done) {
+	if (site.kind === "gdrive") {
+		driveList(site, path, done);
+		return;
+	}
 	if (site.kind === "ftp") {
 		ftpList(site, path, done);
 		return;
@@ -1639,6 +1643,10 @@ function siteList(site, path, done) {
 }
 
 function siteGet(site, remote, local, onBytes, done) {
+	if (site.kind === "gdrive") {
+		driveGet(site, remote, local, done);
+		return;
+	}
 	if (site.kind === "ftp") {
 		runCurl(site, ["-o", local, netUrl(site, remote)], function(code, err) {
 			done(code === 0 ? "" : netWhyText(code, err));
@@ -1651,6 +1659,10 @@ function siteGet(site, remote, local, onBytes, done) {
 }
 
 function sitePut(site, local, remote, onBytes, done) {
+	if (site.kind === "gdrive") {
+		drivePut(site, local, remote, done);
+		return;
+	}
 	if (site.kind === "ftp") {
 		runCurl(site, ["-T", local, netUrl(site, remote)], function(code, err) {
 			done(code === 0 ? "" : netWhyText(code, err));
@@ -1664,6 +1676,10 @@ function sitePut(site, local, remote, onBytes, done) {
 
 // done(errorText, already): already is true when the folder was there.
 function siteMkdir(site, path, done) {
+	if (site.kind === "gdrive") {
+		driveMkdir(site, path, done);
+		return;
+	}
 	if (site.kind === "ftp") {
 		runCurl(site, ["--max-time", "20", "-Q", "MKD " + path, site.base], function(code, err) {
 			if (code === 0) {
@@ -1680,6 +1696,10 @@ function siteMkdir(site, path, done) {
 }
 
 function siteRename(site, from, to, done) {
+	if (site.kind === "gdrive") {
+		driveRename(site, from, to, done);
+		return;
+	}
 	if (site.kind === "ftp") {
 		runCurl(site, ["--max-time", "20", "-Q", "RNFR " + from, "-Q", "RNTO " + to, site.base], function(code, err) {
 			done(code === 0 ? "" : netWhyText(code, err));
@@ -1693,6 +1713,10 @@ function siteRename(site, from, to, done) {
 
 // Take away a file, or a folder that is already empty.
 function siteRemove(site, path, isDir, done) {
+	if (site.kind === "gdrive") {
+		driveTrash(site, path, done);
+		return;
+	}
 	if (site.kind === "ftp") {
 		runCurl(site, ["--max-time", "20", "-Q", (isDir ? "RMD " : "DELE ") + path, site.base], function(code, err) {
 			done(code === 0 ? "" : netWhyText(code, err));
@@ -1706,7 +1730,7 @@ function siteRemove(site, path, isDir, done) {
 
 // A copy of a site with a connection of its own, for a job.
 function jobSite(site) {
-	if (site.kind === "ftp") {
+	if (site.kind === "ftp" || site.kind === "gdrive") {
 		return site;
 	}
 	var copy = {};
@@ -1750,6 +1774,17 @@ netOpenAssistant.prototype.run = function(future) {
 	var site = parseNet(args.url);
 	if (!site) {
 		return fail(future, "That is not an ftp://, sftp:// or smb:// address.");
+	}
+	if (site.scheme === "gdrive") {
+		driveOpen(function(err, d) {
+			if (err) {
+				return fail(future, err);
+			}
+			nets[++netCount] = d;
+			log("Google Drive opened");
+			future.result = {returnValue: true, ok: true, id: netCount, home: "/", email: d.email};
+		});
+		return future;
 	}
 	if (site.scheme === "ftp" || site.scheme === "ftps") {
 		var port = site.port || 21;
@@ -2021,7 +2056,8 @@ function netUpSteps(steps, site, from, remote, st) {
 function netDeleteSteps(steps, site, remote, isDir) {
 	steps.push(function(next) {
 		job.current = nameOf(remote);
-		if (!isDir) {
+		// A folder in Google Drive goes to its trash whole.
+		if (!isDir || site.kind === "gdrive") {
 			siteRemove(site, remote, false, function(err) {
 				job.doneThings++;
 				if (err && !job.cancelled) {
@@ -2264,6 +2300,530 @@ function startNet(future, args, op, then) {
 	}, 10);
 	future.result = {returnValue: true, ok: true, id: job.id};
 	return future;
+}
+
+// ---- Google Drive, signed in through Atlas -------------------------------------
+//
+// There is no Google sign-in this old system can show, so Drive uses the one
+// the Atlas browser holds: its cookies for google.com, read from its cookie
+// store on this TouchPad each time Drive is opened (so they stay as fresh as
+// Atlas keeps them). With them, Drive's own web interface API
+// (clients6.google.com/drive/v2internal, the one drive.google.com calls) is
+// used the way the page uses it: the cookies, plus a SAPISIDHASH header made
+// from one of them, plus the page's public API key, read from the page. Files
+// come down from drive.usercontent.google.com. All of it goes through the
+// system's curl, which speaks modern TLS; the cookies go to curl on its input,
+// never on its command line.
+//
+// Drive knows things by id, not by path, and lets two things in a folder have
+// one name; the paths shown here are made from the names, a second one of a
+// name getting a number, and the ids are kept as folders are listed.
+// Google Docs, Sheets, Slides and Drawings have no file of their own: they
+// come down as .docx, .xlsx, .pptx and .pdf, and cannot be written back.
+//
+// Accounts: the "Google Drive" account template (service/account) is put
+// where the accounts service reads templates the first time this service
+// starts; its sign-in page is the app itself (driveCheck).
+
+var ATLAS_COOKIES = "/var/atlas252/webkit-data/cookies.db";
+var SQLITE = "/usr/bin/sqlite3";
+var DRIVE_API = "https://clients6.google.com/drive/v2internal";
+var DRIVE_UPLOAD = "https://clients6.google.com/upload/drive/v2internal";
+var DRIVE_ORIGIN = "https://drive.google.com";
+var DRIVE_UA = "Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+var DRIVE_FOLDER = "application/vnd.google-apps.folder";
+var DRIVE_TEMPLATE = "com.palm.stark.files.gdrive";
+// Google's own kinds of file: how each comes down, and as what.
+var DRIVE_EXPORTS = {
+	"application/vnd.google-apps.document": {ext: ".docx", url: "https://docs.google.com/document/d/%s/export?format=docx"},
+	"application/vnd.google-apps.spreadsheet": {ext: ".xlsx", url: "https://docs.google.com/spreadsheets/d/%s/export?format=xlsx"},
+	"application/vnd.google-apps.presentation": {ext: ".pptx", url: "https://docs.google.com/presentation/d/%s/export/pptx"},
+	"application/vnd.google-apps.drawing": {ext: ".pdf", url: "https://docs.google.com/drawings/d/%s/export/pdf"}
+};
+
+// Put the account template where the accounts service looks, when it is not
+// there or has changed, and have the service read the templates again.
+(function() {
+	var from = "/media/cryptofs/apps/usr/palm/services/com.palm.stark.files.service/account";
+	var to = "/media/cryptofs/apps/usr/palm/accounts/" + DRIVE_TEMPLATE;
+	if (LUNEOS) {
+		return;
+	}
+	try {
+		var want = fs.readFileSync(from + "/" + DRIVE_TEMPLATE + ".json", "utf8");
+		var have = "";
+		try {
+			have = fs.readFileSync(to + "/" + DRIVE_TEMPLATE + ".json", "utf8");
+		} catch (e1) {}
+		if (want === have) {
+			return;
+		}
+		var sh = "mkdir -p '" + to + "/images' && cp -f '" + from + "/" + DRIVE_TEMPLATE + ".json' '" + to + "/' && " +
+			"cp -f '" + from + "/images/'* '" + to + "/images/' && sync && " +
+			"luna-send -n 1 palm://com.palm.service.accounts/__quit '{}' </dev/null >/dev/null 2>&1";
+		child_process.spawn("/bin/sh", ["-c", sh]);
+		log("put the Google Drive account template in place");
+	} catch (e) {
+		log("no Google Drive account template: " + e);
+	}
+})();
+
+// Atlas's Google cookies: done(error, {cookie, sapisid}).
+function atlasCookies(done) {
+	var out = "";
+	var sql = "select name, value from moz_cookies where host in ('.google.com', 'google.com', 'drive.google.com', '.drive.google.com');";
+	var child;
+	if (!exists(ATLAS_COOKIES) || !exists(SQLITE)) {
+		done("Atlas was not found on this " + DEVICE + ". Install Atlas and sign in to Google there.");
+		return;
+	}
+	try {
+		child = child_process.spawn(SQLITE, ["-separator", "\t", ATLAS_COOKIES, sql]);
+	} catch (e) {
+		done("Atlas's sign-in could not be read.");
+		return;
+	}
+	child.stdout.on("data", function(d) {
+		out += d.toString();
+	});
+	child.on("exit", function(code) {
+		var lines = out.split("\n");
+		var parts = [];
+		var seen = {};
+		var sapisid = "";
+		for (var i = 0; i < lines.length; i++) {
+			var at = lines[i].indexOf("\t");
+			if (at <= 0) {
+				continue;
+			}
+			var name = lines[i].substring(0, at);
+			var value = lines[i].substring(at + 1).replace(/[\r\n]/g, "");
+			if (seen[name]) {
+				continue;
+			}
+			seen[name] = true;
+			parts.push(name + "=" + value);
+			if (name === "SAPISID") {
+				sapisid = value;
+			}
+		}
+		if (code !== 0 || !seen.SID || !sapisid) {
+			done("Atlas is not signed in to Google. Open Atlas, sign in at drive.google.com, then try again.");
+			return;
+		}
+		done("", {cookie: parts.join("; "), sapisid: sapisid});
+	});
+}
+
+// Run curl for Drive. headers: true sends the API's sign-in as well as the
+// cookies. done(httpCode, body, errorText).
+function driveCurl(site, args, done, headers) {
+	var out = [];
+	var err = "";
+	var child;
+	try {
+		child = child_process.spawn(CURL, ["-K", "-", "--silent", "--show-error", "--connect-timeout", String(NET_CONNECT),
+			// No "Expect: 100-continue": Google's interim answer would read as the result.
+			"-A", DRIVE_UA, "-H", "Expect:", "-w", "\n%{http_code}"].concat(args), {cwd: "/"});
+	} catch (e) {
+		setTimeout(function() {
+			done(0, "", String(e));
+		}, 0);
+		return;
+	}
+	if (job && !job.finished) {
+		job.kids = job.kids || [];
+		job.kids.push(child);
+	}
+	child.stdout.on("data", function(d) {
+		out.push(d.toString());
+	});
+	child.stderr.on("data", function(d) {
+		err += d.toString();
+	});
+	child.on("exit", function() {
+		if (job && job.kids) {
+			var at = job.kids.indexOf(child);
+			if (at >= 0) {
+				job.kids.splice(at, 1);
+			}
+		}
+		var text = out.join("");
+		var cut = text.lastIndexOf("\n");
+		done(Number(text.substring(cut + 1)) || 0, text.substring(0, cut), err);
+	});
+	function quoted(s) {
+		return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\r\n]/g, " ");
+	}
+	var conf = "header = \"Cookie: " + quoted(site.cookie) + "\"\n";
+	if (headers) {
+		var ts = Math.floor(new Date().getTime() / 1000);
+		var hash = require("crypto").createHash("sha1").update(ts + " " + site.sapisid + " " + DRIVE_ORIGIN).digest("hex");
+		conf += "header = \"Authorization: SAPISIDHASH " + ts + "_" + hash + "\"\n" +
+			"header = \"X-Origin: " + DRIVE_ORIGIN + "\"\n" +
+			"header = \"X-Goog-AuthUser: 0\"\n";
+	}
+	try {
+		child.stdin.write(conf);
+		child.stdin.end();
+	} catch (e2) {}
+}
+
+// A call to the API: done(error, parsed answer).
+function driveApi(site, method, path, query, body, done) {
+	var url = (path.indexOf("https://") === 0 ? path : DRIVE_API + path) + (path.indexOf("?") >= 0 ? "&" : "?") +
+		(query ? query + "&" : "") + "key=" + site.key;
+	var args = ["-X", method];
+	if (body !== null && body !== undefined) {
+		args.push("-H", "Content-Type: application/json", "--data-binary", JSON.stringify(body));
+	} else if (method !== "GET") {
+		args.push("-d", "");
+	}
+	args.push(url);
+	driveCurl(site, args, function(code, text, err) {
+		var data = null;
+		try {
+			data = text ? JSON.parse(text) : {};
+		} catch (e) {}
+		if (code >= 200 && code < 300) {
+			done("", data || {});
+			return;
+		}
+		done(driveWhy(code, data, err), data);
+	}, true);
+}
+
+function driveWhy(code, data, err) {
+	var msg = data && data.error && data.error.message ? String(data.error.message) : "";
+	if (code === 401 || code === 403 && /auth|sign/i.test(msg)) {
+		return "Google wants you to sign in again: open Atlas, sign in at drive.google.com, then try again.";
+	}
+	if (code === 404) {
+		return "That is not in Google Drive any more.";
+	}
+	if (code === 403) {
+		return "Google Drive would not allow that" + (msg ? " (" + msg + ")" : "") + ".";
+	}
+	if (!code) {
+		log("drive: curl failed: " + String(err || "").replace(/\s+/g, " ").substring(0, 200));
+		return "Could not reach Google Drive.";
+	}
+	log("drive said " + code + ": " + (msg || err || "").substring(0, 200));
+	return "Google Drive did not do what was asked" + (msg ? " (" + msg + ")" : "") + ".";
+}
+
+// Sign in: Atlas's cookies, the page's API key, and who the account is.
+// done(error, site).
+function driveOpen(done) {
+	atlasCookies(function(err, ck) {
+		if (err) {
+			done(err);
+			return;
+		}
+		var site = {kind: "gdrive", host: "drive", cookie: ck.cookie, sapisid: ck.sapisid, key: "", email: "",
+			ids: {"/": {id: "root", d: 1}}};
+		driveCurl(site, ["-L", DRIVE_ORIGIN + "/drive/my-drive"], function(code, page) {
+			// The page carries more than one key; its own is the one it names most.
+			var counts = {};
+			var best = "";
+			var re = /AIzaSy[A-Za-z0-9_\-]{33}/g;
+			var m;
+			while ((m = re.exec(page || "")) !== null) {
+				counts[m[0]] = (counts[m[0]] || 0) + 1;
+				if (!best || counts[m[0]] > counts[best]) {
+					best = m[0];
+				}
+			}
+			if (code !== 200 || !best) {
+				done(code === 200 ? "Google Drive's page has changed; this needs an update of " + APP_NAME + "." :
+					"Could not reach Google Drive.");
+				return;
+			}
+			site.key = best;
+			driveApi(site, "GET", "/about", "fields=user(emailAddress)", null, function(err2, about) {
+				if (err2) {
+					done(err2);
+					return;
+				}
+				site.email = about.user && about.user.emailAddress || "";
+				done("", site);
+			});
+		}, false);
+	});
+}
+
+// {} -> {email}: whether Drive can be opened with Atlas's sign-in (the
+// account's sign-in page asks this).
+var driveCheckAssistant = function() {};
+driveCheckAssistant.prototype.run = function(future) {
+	driveOpen(function(err, site) {
+		if (err) {
+			return fail(future, err);
+		}
+		future.result = {returnValue: true, ok: true, email: site.email};
+	});
+	return future;
+};
+
+// {} -> {accounts: [{email}]}: the Google Drive accounts in Accounts.
+var driveAccountsAssistant = function() {};
+driveAccountsAssistant.prototype.run = function(future) {
+	try {
+		IMPORTS.foundations.Comms.PalmCall.call("palm://com.palm.service.accounts/", "listAccounts",
+			{templateId: DRIVE_TEMPLATE}).then(function(f) {
+				var list = [];
+				try {
+					var r = f.result || {};
+					for (var i = 0; r.results && i < r.results.length; i++) {
+						list.push({email: r.results[i].username || "", id: r.results[i]._id});
+					}
+				} catch (e) {}
+				future.result = {returnValue: true, ok: true, accounts: list};
+			});
+	} catch (e) {
+		future.result = {returnValue: true, ok: true, accounts: []};
+	}
+	return future;
+};
+
+// The display name of a Drive item: Google's own files get the ending they
+// come down with, and a slash (allowed in Drive names) cannot be in a path.
+function driveName(item) {
+	var name = String(item.title || "Untitled").replace(/\//g, "_");
+	var ex = DRIVE_EXPORTS[item.mimeType];
+	if (ex && name.toLowerCase().lastIndexOf(ex.ext) !== name.length - ex.ext.length) {
+		name += ex.ext;
+	}
+	return name;
+}
+
+// A folder's contents: done(error, entries), and the ids kept.
+function driveList(site, path, done) {
+	driveFind(site, path, function(err, folder) {
+		if (err) {
+			done(err, null);
+			return;
+		}
+		if (!folder.d) {
+			done("That is a file, not a folder.", null);
+			return;
+		}
+		var entries = [];
+		var taken = {};
+		(function page(token) {
+			var q = "q=" + encodeURIComponent("'" + folder.id + "' in parents and trashed=false") +
+				"&maxResults=1000&fields=" + encodeURIComponent("nextPageToken,items(id,title,mimeType,fileSize,modifiedDate)") +
+				(token ? "&pageToken=" + encodeURIComponent(token) : "");
+			driveApi(site, "GET", "/files", q, null, function(err2, r) {
+				if (err2) {
+					done(err2, null);
+					return;
+				}
+				var items = r.items || [];
+				for (var i = 0; i < items.length; i++) {
+					var it = items[i];
+					if (it.mimeType === "application/vnd.google-apps.shortcut" || it.mimeType === "application/vnd.google-apps.form" ||
+							it.mimeType === "application/vnd.google-apps.site" || it.mimeType === "application/vnd.google-apps.map") {
+						continue;       // nothing here can show or bring these down
+					}
+					var dir = it.mimeType === DRIVE_FOLDER;
+					var name = freeNetName(taken, driveName(it), dir);
+					taken[name.toLowerCase()] = true;
+					site.ids[netJoin(path, name)] = {id: it.id, d: dir ? 1 : 0, mime: it.mimeType};
+					entries.push({n: name, d: dir ? 1 : 0, s: Number(it.fileSize) || 0,
+						m: it.modifiedDate ? Date.parse(it.modifiedDate) || 0 : 0});
+				}
+				if (r.nextPageToken) {
+					page(r.nextPageToken);
+				} else {
+					done("", entries);
+				}
+			});
+		})("");
+	});
+}
+
+// What is at a path: done(error, {id, d, mime}), listing the folders above it
+// as needed.
+function driveFind(site, path, done) {
+	if (site.ids[path]) {
+		done("", site.ids[path]);
+		return;
+	}
+	if (path === "/") {
+		done("", {id: "root", d: 1});
+		return;
+	}
+	driveList(site, parentOf(path) || "/", function(err) {
+		if (err) {
+			done(err);
+			return;
+		}
+		done(site.ids[path] ? "" : "That is not in Google Drive any more.", site.ids[path]);
+	});
+}
+
+function driveGet(site, remote, local, done) {
+	driveFind(site, remote, function(err, it) {
+		if (err) {
+			done(err);
+			return;
+		}
+		if (it.d) {
+			done("That is a folder.");
+			return;
+		}
+		var ex = DRIVE_EXPORTS[it.mime];
+		if (!ex && /^application\/vnd\.google-apps\./.test(it.mime || "")) {
+			done("This kind of Google file cannot be brought down.");
+			return;
+		}
+		var url = ex ? ex.url.replace("%s", it.id) :
+			"https://drive.usercontent.google.com/download?id=" + encodeURIComponent(it.id) + "&export=download&authuser=0&confirm=t";
+		driveCurl(site, ["-L", "-o", local, url], function(code) {
+			// What comes back as a web page is a sign-in or a warning, not the file.
+			if (code === 200 && it.mime !== "text/html" && looksLikePage(local)) {
+				try { fs.unlinkSync(local); } catch (e) {}
+				done("Google wants you to sign in again: open Atlas, sign in at drive.google.com, then try again.");
+				return;
+			}
+			if (code !== 200) {
+				try { fs.unlinkSync(local); } catch (e2) {}
+				done(driveWhy(code, null, ""));
+				return;
+			}
+			done("");
+		}, false);
+	});
+}
+
+// A file goes up: in place of one of that name in the folder, or as a new one.
+function drivePut(site, local, remote, done) {
+	var name = nameOf(remote);
+	driveFind(site, parentOf(remote) || "/", function(err, folder) {
+		if (err) {
+			done(err);
+			return;
+		}
+		var have = site.ids[remote];
+		if (have && have.d) {
+			done("A folder of that name is there.");
+			return;
+		}
+		if (have && /^application\/vnd\.google-apps\./.test(have.mime || "")) {
+			done("Google's own documents cannot be replaced from here.");
+			return;
+		}
+		var url = DRIVE_UPLOAD + "/files" + (have ? "/" + encodeURIComponent(have.id) : "") +
+			"?uploadType=media&fields=id&key=" + site.key;
+		driveCurl(site, ["-X", have ? "PUT" : "POST", "-H", "Content-Type: application/octet-stream", "-T", local, url],
+			function(code, text) {
+				var r = null;
+				try { r = JSON.parse(text); } catch (e) {}
+				if (code < 200 || code >= 300 || !r || !r.id) {
+					done(driveWhy(code, r, ""));
+					return;
+				}
+				if (have) {
+					done("");
+					return;
+				}
+				// A new file starts out as "Untitled" in My Drive: name it and put it in place.
+				var q = "fields=id" + (folder.id !== "root" ? "&addParents=" + encodeURIComponent(folder.id) + "&removeParents=root" : "");
+				driveApi(site, "PATCH", "/files/" + encodeURIComponent(r.id), q, {title: name}, function(err2) {
+					if (!err2) {
+						site.ids[remote] = {id: r.id, d: 0, mime: ""};
+					}
+					done(err2);
+				});
+			}, true);
+	});
+}
+
+// Whether a file that came down starts like a web page.
+function looksLikePage(path) {
+	var fd = null;
+	try {
+		fd = fs.openSync(path, "r");
+		var b = new Buffer(256);
+		var n = fs.readSync(fd, b, 0, 256, 0);
+		fs.closeSync(fd);
+		return /^\s*<(!doctype html|html)/i.test(b.toString("utf8", 0, n));
+	} catch (e) {
+		try { fs.closeSync(fd); } catch (e2) {}
+		return false;
+	}
+}
+
+function driveMkdir(site, path, done) {
+	driveFind(site, parentOf(path) || "/", function(err, folder) {
+		if (err) {
+			done(err, false);
+			return;
+		}
+		if (site.ids[path]) {
+			done("There is already something by that name there.", true);
+			return;
+		}
+		driveApi(site, "POST", "/files", "fields=id", {title: nameOf(path), mimeType: DRIVE_FOLDER, parents: [{id: folder.id}]},
+			function(err2, r) {
+				if (!err2) {
+					site.ids[path] = {id: r.id, d: 1, mime: DRIVE_FOLDER};
+				}
+				done(err2, false);
+			});
+	});
+}
+
+// A new name, or a new folder, or both.
+function driveRename(site, from, to, done) {
+	driveFind(site, from, function(err, it) {
+		if (err) {
+			done(err);
+			return;
+		}
+		driveFind(site, parentOf(from) || "/", function(err2, oldParent) {
+			driveFind(site, parentOf(to) || "/", function(err3, newParent) {
+				if (err2 || err3) {
+					done(err2 || err3);
+					return;
+				}
+				var q = "fields=id";
+				if (oldParent.id !== newParent.id) {
+					q += "&addParents=" + encodeURIComponent(newParent.id) + "&removeParents=" + encodeURIComponent(oldParent.id);
+				}
+				// Google's own files keep their names without the ending shown here.
+				var title = nameOf(to);
+				var ex = DRIVE_EXPORTS[it.mime];
+				if (ex && title.toLowerCase().lastIndexOf(ex.ext) === title.length - ex.ext.length) {
+					title = title.substring(0, title.length - ex.ext.length);
+				}
+				driveApi(site, "PATCH", "/files/" + encodeURIComponent(it.id), q, {title: title}, function(err4) {
+					if (!err4) {
+						delete site.ids[from];
+						site.ids[to] = it;
+					}
+					done(err4);
+				});
+			});
+		});
+	});
+}
+
+// Into Drive's trash, where it can still be got back from drive.google.com.
+function driveTrash(site, path, done) {
+	driveFind(site, path, function(err, it) {
+		if (err) {
+			done(err);
+			return;
+		}
+		driveApi(site, "POST", "/files/" + encodeURIComponent(it.id) + "/trash", "fields=id", null, function(err2) {
+			if (!err2) {
+				delete site.ids[path];
+			}
+			done(err2);
+		});
+	});
 }
 
 // ---- work through the TouchPad: between sites, archives on a site, opening ----

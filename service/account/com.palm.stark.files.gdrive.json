@@ -1,0 +1,30 @@
+{
+	"templateId": "com.palm.stark.files.gdrive",
+	"loc_name": "Google Drive",
+	"icon": {
+		"loc_32x32": "images/cloud-32x32.png",
+		"loc_48x48": "images/cloud-48x48.png"
+	},
+	"validator": {
+		"customUI": {
+			"appId": "com.palm.stark.files",
+			"name": "index.html"
+		},
+		"address": "palm://com.palm.stark.files.service/driveCheck"
+	},
+	"readPermissions": [
+		"com.palm.stark.files",
+		"com.palm.stark.files.service"
+	],
+	"writePermissions": [
+		"com.palm.app.accounts",
+		"com.palm.stark.files",
+		"com.palm.stark.files.service"
+	],
+	"capabilityProviders": [
+		{
+			"capability": "DOCUMENTS",
+			"id": "com.palm.stark.files.gdrive.documents"
+		}
+	]
+}
