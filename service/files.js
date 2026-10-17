@@ -3517,8 +3517,14 @@ shareAssistant.prototype.run = function(future) {
 				var q = function(s) {
 					return "'" + String(s).replace(/'/g, "'\\''") + "'";
 				};
-				child_process.spawn("/bin/sh", ["-c", q(process.execPath) + " " + q(FTPD) + " " + q(file) +
-					" >> " + FTPD_LOG + " 2>&1 </dev/null &"]);
+				// Everything this service has open is closed first. The system
+				// watches the pipes it gave the service to know when it has
+				// ended; a server still holding one keeps the service "running"
+				// after it has gone, and no new one is started, so the app waits
+				// for it for ever. (ftpd.js also lets go of sockets itself.)
+				child_process.spawn("/bin/sh", ["-c",
+					"for f in /proc/$$/fd/*; do n=${f##*/}; [ \"$n\" -gt 2 ] 2>/dev/null && eval \"exec $n>&-\"; done; " +
+					q(process.execPath) + " " + q(FTPD) + " " + q(file) + " >> " + FTPD_LOG + " 2>&1 </dev/null &"]);
 				// Give it a moment to start listening, or to fail.
 				var waited = 0;
 				(function check() {
