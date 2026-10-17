@@ -22,7 +22,7 @@ enyo.kind({
 
 				{kind: "HFlexBox", flex: 1, components: [
 					{name: "tree", kind: "FM.Tree", onPick: "treePick"},
-					{kind: "VFlexBox", flex: 1, components: [
+					{name: "filesBox", kind: "VFlexBox", flex: 1, components: [
 						{name: "searchBar", kind: "HFlexBox", align: "center", className: "fm-searchbar", showing: false, components: [
 							{name: "searchNote", flex: 1, className: "fm-one-line"},
 							{name: "deep", kind: "Button", caption: "Search Subfolders", onclick: "deepSearch"}
@@ -34,7 +34,7 @@ enyo.kind({
 
 				// The bar when nothing is selected...
 				{name: "bar", kind: "HFlexBox", align: "center", className: "fm-bottom", components: [
-					{kind: "Button", caption: "Folders", className: "enyo-button-dark", onclick: "toggleTree"},
+					{name: "foldersBtn", kind: "Button", caption: "Folders", className: "enyo-button-dark", onclick: "toggleTree"},
 					{name: "newBtn", kind: "Button", caption: "New Folder", className: "enyo-button-dark", onclick: "newFolder"},
 					{name: "paste", kind: "Button", caption: "Paste", className: "enyo-button-blue", onclick: "paste", showing: false},
 					{name: "status", flex: 1, className: "fm-status"},
@@ -100,6 +100,9 @@ enyo.kind({
 		this.awake = false;
 		this.hidden = FM.pref("hidden", "0") === "1";
 		this.treeShown = FM.pref("tree", "1") === "1";
+		// On a narrow screen (a phone) the folders and the files take turns at
+		// the whole width; see setCompact.
+		this.compact = false;
 	},
 
 	rendered: function() {
@@ -114,11 +117,20 @@ enyo.kind({
 		this.$.files.setHidden(this.hidden);
 		this.$.tree.setHidden(this.hidden);
 		this.$.tree.setShowing(this.treeShown);
+		this.setCompact(FM.isNarrow());
 		this.showChoices();
 		this.path = FM.ROOT;
 		this.showCrumbs();
 		this.showNav();
 		this.wake(0);
+		var self = this;
+		this.$.svc.deviceName(function(name) {
+			if (name && name !== FM.DEVICE_NAME) {
+				FM.setDeviceName(name);
+				self.$.tree.renameRoot();
+				self.showCrumbs();
+			}
+		});
 	},
 
 	// Wait for the file helper to answer, then show the first folder. Right after
@@ -132,6 +144,10 @@ enyo.kind({
 				return;
 			}
 			self.awake = true;
+			if (r.app) {
+				FM.setAppName(r.app);
+			}
+			FM.LUNEOS = !!r.luneos;
 			// Should an earlier run have left the system disk open, close it.
 			self.$.svc.ask("unlock", {on: false}, function() {});
 			self.$.files.showNote("");
@@ -145,7 +161,7 @@ enyo.kind({
 				return;
 			}
 			if (tries >= 8) {
-				self.$.files.showNote("The file helper did not start. Close Topaz Explorer and open it again.");
+				self.$.files.showNote("The file helper did not start. Close " + FM.APP_NAME + " and open it again.");
 				return;
 			}
 			self.wake(tries + 1);
@@ -286,6 +302,55 @@ enyo.kind({
 
 	treePick: function(inSender, path) {
 		this.go(path);
+		if (this.compact) {
+			// The folder is chosen: its files take the screen.
+			this.showTree(false);
+		}
+	},
+
+	// Narrow (a phone): the folder tree and the files are shown one at a time,
+	// each across the whole screen, starting with the files; back and Folders
+	// go to the folders, back again (or picking one) to the files. Wide (the
+	// TouchPad): side by side, the tree shown or hidden as last chosen.
+	setCompact: function(on) {
+		if (on === this.compact) {
+			return;
+		}
+		this.compact = on;
+		this.$.tree.addRemoveClass("fm-tree-full", on);
+		this.addRemoveClass("fm-compact", on);
+		if (this.path) {
+			this.showCrumbs();
+			this.showStatus();
+		}
+		if (on) {
+			this.showTree(false);
+		} else {
+			this.treeShown = FM.pref("tree", "1") === "1";
+			this.$.tree.setShowing(this.treeShown);
+			this.$.filesBox.setShowing(true);
+			this.$.foldersBtn.setCaption("Folders");
+			this.resized();
+		}
+	},
+
+	// Compact only: the folders or the files.
+	showTree: function(on) {
+		this.treeShown = on;
+		this.$.foldersBtn.setCaption(on ? "Files" : "Folders");
+		this.$.tree.setShowing(on);
+		this.$.filesBox.setShowing(!on);
+		if (on) {
+			this.$.tree.reveal(this.path);
+		}
+		this.resized();
+	},
+
+	resizeHandler: function() {
+		this.inherited(arguments);
+		if (this.begun) {
+			this.setCompact(FM.isNarrow());
+		}
 	},
 
 	crumbClick: function(inSender) {
@@ -299,6 +364,9 @@ enyo.kind({
 			this.closeEditor(this, this.$.editor.isChanged());
 		} else if (this.$.files.selecting) {
 			this.doneSelecting();
+		} else if (this.compact) {
+			// On a phone, back goes to the folders, and from there back to the files.
+			this.showTree(!this.treeShown);
 		} else if (this.backs.length) {
 			this.goBack();
 		} else {
@@ -344,7 +412,7 @@ enyo.kind({
 	// An archive was tapped: offer to unpack it.
 	askExtract: function(e) {
 		if (!this.canChange()) {
-			FM.banner("Copy the archive to My TouchPad to extract it");
+			FM.banner("Copy the archive to " + FM.ROOT_NAME + " to extract it");
 			return;
 		}
 		this.archive = e;
@@ -496,7 +564,8 @@ enyo.kind({
 	// The path as folders to tap. A long path keeps its last few.
 	showCrumbs: function() {
 		var trail = FM.trail(this.path);
-		var keep = 4;
+		// A phone has room for the folder it is in, with "…" for the one above.
+		var keep = this.compact ? 1 : 4;
 		var from = Math.max(0, trail.length - keep);
 		var c = this.$.crumbs;
 		c.destroyControls();
@@ -518,6 +587,11 @@ enyo.kind({
 
 	showStatus: function() {
 		var n = this.$.files.getCount();
+		// A phone's bar has room for the number and no more.
+		if (this.compact) {
+			this.$.status.setContent(String(n));
+			return;
+		}
 		var text = FM.count(n, "item");
 		if (this.free >= 0) {
 			text += "  ·  " + FM.size(this.free) + " free";
@@ -554,6 +628,10 @@ enyo.kind({
 	},
 
 	toggleTree: function() {
+		if (this.compact) {
+			this.showTree(!this.treeShown);
+			return;
+		}
 		this.treeShown = !this.treeShown;
 		this.$.tree.setShowing(this.treeShown);
 		FM.setPref("tree", this.treeShown ? "1" : "0");
@@ -576,9 +654,10 @@ enyo.kind({
 			return;
 		}
 		this.$.confirmDialog.ask("Allow changes to system files?",
-			"Topaz Explorer will be able to rename, move, replace and delete anything on this TouchPad, " +
-			"including the files webOS needs to start. A mistake can leave the TouchPad unable to " +
-			"start until it is restored with webOS Doctor. This stays on until you switch it off or close Topaz Explorer.",
+			FM.APP_NAME + " will be able to rename, move, replace and delete anything on this " + FM.DEVICE_NAME + ", " +
+			"including the files webOS needs to start. A mistake can leave the " + FM.DEVICE_NAME + " unable to " +
+			"start until its system is restored (with webOS Doctor on legacy webOS). " +
+			"This stays on until you switch it off or close " + FM.APP_NAME + ".",
 			"Allow", function() {
 				self.setSystem(true);
 			});
@@ -925,7 +1004,7 @@ enyo.kind({
 		} else if (s.ok && s.note) {
 			FM.banner(s.note);
 		} else if (!s.ok) {
-			FM.banner("Topaz Explorer lost touch with its helper; check what was " + did);
+			FM.banner(FM.APP_NAME + " lost touch with its helper; check what was " + did);
 		} else if (s.failed) {
 			FM.banner(FM.count(s.failed, "item") + " could not be " + did + (s.firstError ? ", \"" + s.firstError + "\" among them" : ""));
 		} else if (s.cancelled) {

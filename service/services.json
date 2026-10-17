@@ -19,7 +19,8 @@
 				{ "name": "unlock", "assistant": "unlockAssistant", "public": true },
 				{ "name": "start", "assistant": "startAssistant", "public": true },
 				{ "name": "status", "assistant": "statusAssistant", "public": true },
-				{ "name": "cancel", "assistant": "cancelAssistant", "public": true }
+				{ "name": "cancel", "assistant": "cancelAssistant", "public": true },
+				{ "name": "quit", "assistant": "quitAssistant", "public": true }
 			]
 		}
 	]

@@ -10,6 +10,8 @@ enyo.kind({
 		{name: "files", kind: "PalmService", service: "palm://com.palm.stark.files.service/",
 			onSuccess: "answered", onFailure: "failed"},
 		{name: "apps", kind: "PalmService", service: "palm://com.palm.applicationManager/",
+			onSuccess: "answered", onFailure: "failed"},
+		{name: "prefs", kind: "PalmService", service: "palm://com.palm.preferences/systemProperties/",
 			onSuccess: "answered", onFailure: "failed"}
 	],
 
@@ -22,6 +24,14 @@ enyo.kind({
 	// what follows "file://" as the file's name without decoding %20 and the like.
 	openFile: function(path, callback) {
 		this.send(this.$.apps, "open", {target: "file://" + path}, callback);
+	},
+
+	// The device's short name ("TouchPad", "Q25"), or "" if the system has none.
+	deviceName: function(callback) {
+		var key = "com.palm.properties.deviceNameShort";
+		this.send(this.$.prefs, "Get", {key: key}, function(r) {
+			callback(r.ok && r[key] ? String(r[key]) : "");
+		});
 	},
 
 	// Start an app with launch parameters.

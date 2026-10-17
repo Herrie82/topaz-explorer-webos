@@ -101,6 +101,23 @@
 	width: 210px;
 }
 
+/* On a phone the folder's name needs the room more than the search box. */
+.fm-compact .fm-search {
+	width: 130px;
+}
+
+/* And the bottom bar's six buttons need to be narrower to fit across. */
+.fm-compact .fm-bottom .enyo-button {
+	padding-left: 4px;
+	padding-right: 4px;
+	margin-left: 2px;
+	margin-right: 2px;
+}
+
+.fm-compact .fm-bottom .fm-status {
+	padding: 0 4px;
+}
+
 /* ---- folder tree (left) ---- */
 
 .fm-tree {
@@ -307,6 +324,21 @@
 
 .fm-narrow .fm-col-type {
 	display: none;
+}
+
+.fm-narrow .fm-col-date {
+	width: 100px;
+}
+
+.fm-tight .fm-col-date {
+	display: none;
+}
+
+/* On a phone the tree takes the whole width, in turn with the files. */
+.fm-tree.fm-tree-full {
+	width: auto;
+	-webkit-box-flex: 1;
+	border-right: none;
 }
 
 /* The letters on a file's icon, colored by kind of file. */

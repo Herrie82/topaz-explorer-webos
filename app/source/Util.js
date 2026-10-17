@@ -1,12 +1,38 @@
 /* Shared helpers: paths, kinds of file, sizes and dates, settings. */
 var FM = FM || {};
 
-// Two places to start from: the TouchPad's own storage, where things can be
+// Two places to start from: the device's own storage, where things can be
 // changed, and the whole system, which can only be looked at.
 FM.ROOT = "/media/internal";
+// The device's short name, "TouchPad" until the system says otherwise
+// (com.palm.properties.deviceNameShort; LuneOS gives each device its own).
+FM.DEVICE_NAME = "TouchPad";
 FM.ROOT_NAME = "My TouchPad";
 FM.SYSTEM = "/";
 FM.SYSTEM_NAME = "System";
+
+FM.setDeviceName = function(name) {
+	FM.DEVICE_NAME = name;
+	FM.ROOT_NAME = "My " + name;
+};
+
+// The app's own name, as the file service gives it: LuneOS Explorer on LuneOS,
+// where "Topaz" (the TouchPad's name while it was being made) means nothing.
+FM.APP_NAME = "Topaz Explorer";
+// Running on LuneOS, as the file service says.
+FM.LUNEOS = false;
+
+FM.setAppName = function(name) {
+	FM.APP_NAME = name;
+	document.title = name;
+};
+
+// Whether the window is too narrow for the folder tree beside the files: a
+// phone, 720 wide square screens included, not the TouchPad (1024 wide, 768
+// standing up).
+FM.isNarrow = function() {
+	return (window.innerWidth || document.documentElement.clientWidth || 1024) < 760;
+};
 
 FM.log = function(msg) {
 	try { console.log("[files] " + msg); } catch (e) {}
@@ -14,7 +40,7 @@ FM.log = function(msg) {
 
 // ---- paths ----
 
-// Whether a path is on the TouchPad's own storage.
+// Whether a path is on the device's own storage.
 FM.inStorage = function(path) {
 	return path === FM.ROOT || path.indexOf(FM.ROOT + "/") === 0;
 };
@@ -87,6 +113,10 @@ FM.fileUrl = function(path) {
 
 // A small picture of an image file, made by the system. For a style rule.
 FM.thumbUrl = function(path, px) {
+	// LuneOS's web engine has no extractfs: the picture itself, scaled by CSS.
+	if (FM.LUNEOS) {
+		return "url('" + FM.fileUrl(path).replace(/'/g, "%27") + "')";
+	}
 	return "url('/var/luna/data/extractfs" + encodeURIComponent(path).replace(/'/g, "%27") +
 		":0:0:" + px + ":" + px + ":3')";
 };
@@ -190,14 +220,19 @@ FM.size = function(bytes) {
 	return (n >= 100 ? Math.round(n) : (n >= 10 ? n.toFixed(1) : n.toFixed(2))) + " " + units[u];
 };
 
-FM.when = function(ms) {
+// dayOnly leaves the time out, where the files are too narrow for it.
+FM.when = function(ms, dayOnly) {
 	if (!ms) {
 		return "";
 	}
 	var d = new Date(ms);
 	var h = d.getHours();
 	var m = d.getMinutes();
-	return (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear() + " " +
+	var day = (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear();
+	if (dayOnly) {
+		return day;
+	}
+	return day + " " +
 		(h % 12 || 12) + ":" + (m < 10 ? "0" : "") + m + " " + (h < 12 ? "AM" : "PM");
 };
 
