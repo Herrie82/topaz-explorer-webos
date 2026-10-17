@@ -69,12 +69,14 @@ FM.nameOf = function(path) {
 FM.trail = function(path) {
 	if (FM.isNet(path)) {
 		// A site address walks its own way: the address, then each folder.
-		var netRoot = path.replace(/^(ftps?:\/\/[^\/]+).*$/, "$1");
-		var net = [{name: netRoot, path: netRoot}];
+		var netRoot = FM.netRootOf(path);
+		var net = [{name: netRoot.replace(/^[a-z]+:\/\//i, ""), path: netRoot}];
 		var rest = path.substring(netRoot.length).split("/");
+		var netAt = netRoot;
 		for (var j = 0; j < rest.length; j++) {
 			if (rest[j]) {
-				net.push({name: rest[j], path: netRoot + "/" + rest[j]});
+				netAt += "/" + rest[j];
+				net.push({name: rest[j], path: netAt});
 			}
 		}
 		return net;
@@ -135,15 +137,16 @@ FM.thumbUrl = function(path, px) {
 
 // ---- network folders ----
 
-// Whether a path is a folder or file on an FTP site.
+// Whether a path is a folder or file on a site (FTP, FTPS, SFTP or SMB).
 FM.isNet = function(path) {
-	return /^ftps?:\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb):\/\//i.test(String(path || ""));
 };
 
-// The parts of a site address, or null: {scheme, host, port, user, pass, start}.
-// The name and password, when the address carries them, are taken plainly.
+// The parts of a site address, or null: {scheme, host, port, user, pass, domain, start}.
+// The name and password, when the address carries them, are taken plainly; an
+// SMB name may carry its domain, "DOMAIN;name" or "DOMAIN\name".
 FM.parseNet = function(url) {
-	var m = /^(ftps?):\/\/(?:([^:@\/]*)(?::([^@\/]*))?@)?([^\/:]+)(?::(\d+))?(\/.*)?$/i
+	var m = /^(ftps?|sftp|smb):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i
 		.exec(String(url || "").replace(/^\s+|\s+$/g, ""));
 	if (!m) {
 		return null;
@@ -155,13 +158,74 @@ FM.parseNet = function(url) {
 			return s || "";
 		}
 	}
-	return {scheme: m[1].toLowerCase(), user: plain(m[2]), pass: plain(m[3]),
-		host: m[4], port: m[5] ? Number(m[5]) : 0, start: m[6] || "/"};
+	var info = m[2] || "";
+	var colon = info.indexOf(":");
+	var user = plain(colon >= 0 ? info.substring(0, colon) : info);
+	var pass = plain(colon >= 0 ? info.substring(colon + 1) : "");
+	var domain = "";
+	var cut = Math.max(user.indexOf(";"), user.indexOf("\\"));
+	if (cut > 0) {
+		domain = user.substring(0, cut);
+		user = user.substring(cut + 1);
+	}
+	var start = (m[5] || "/").replace(/\/+$/, "") || "/";
+	return {scheme: m[1].toLowerCase(), user: user, pass: pass, domain: domain,
+		host: m[3], port: m[4] ? Number(m[4]) : 0, start: plain(start)};
 };
 
-// "ftp://host:port": the part of a site address before its path.
+// "sftp://host:port": the part of a site address before its path.
 FM.netRoot = function(parts) {
 	return parts.scheme + "://" + parts.host + (parts.port ? ":" + parts.port : "");
+};
+
+// The site part of a path on a site: "smb://nas/Music/x" -> "smb://nas".
+FM.netRootOf = function(path) {
+	var m = /^((?:ftps?|sftp|smb):\/\/[^\/]+)/i.exec(String(path || ""));
+	return m ? m[1] : "";
+};
+
+// What kind of site a path is on, for the status bar: "FTP", "SFTP", "SMB".
+FM.netKind = function(path) {
+	var m = /^(ftps?|sftp|smb):/i.exec(String(path || ""));
+	return m ? m[1].toUpperCase() : "";
+};
+
+// ---- favorites ----
+
+// Places kept in the folder tree: [{name, path, user, pass}]. user and pass are
+// the sign-in for a site, kept so a tap opens it without asking.
+FM.favorites = function() {
+	try {
+		var list = enyo.json.parse(FM.pref("favorites", "[]"));
+		return list && list.length !== undefined ? list : [];
+	} catch (e) {
+		return [];
+	}
+};
+
+FM.setFavorites = function(list) {
+	FM.setPref("favorites", enyo.json.stringify(list));
+};
+
+FM.favoriteAt = function(path) {
+	var list = FM.favorites();
+	for (var i = 0; i < list.length; i++) {
+		if (list[i].path === path) {
+			return list[i];
+		}
+	}
+	return null;
+};
+
+// The sign-in kept with a favorite on a site, when there is one: {user, pass}.
+FM.favoriteLogin = function(root) {
+	var list = FM.favorites();
+	for (var i = 0; i < list.length; i++) {
+		if (list[i].user && FM.netRootOf(list[i].path) === root) {
+			return list[i];
+		}
+	}
+	return null;
 };
 
 // ---- kinds of file ----

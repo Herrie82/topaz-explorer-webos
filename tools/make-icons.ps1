@@ -103,6 +103,29 @@ $c.G.FillEllipse((New-Object System.Drawing.SolidBrush (Rgb 120 220 120)), 33, 2
 $c.G.DrawLine((New-Object System.Drawing.Pen (Rgb 70 76 84), 2), 10, 24, 26, 24)
 Save-Canvas $c "system.png"
 
+# star.png: a gold star, for Favorites in the folder tree.
+$c = New-Canvas 48 48
+$pts = New-Object 'System.Drawing.PointF[]' 10
+for ($i = 0; $i -lt 10; $i++) {
+    $r = if ($i % 2 -eq 0) { 20 } else { 8.5 }
+    $a = -[Math]::PI / 2 + $i * [Math]::PI / 5
+    $pts[$i] = New-Object System.Drawing.PointF ([single](24 + $r * [Math]::Cos($a))), ([single](25 + $r * [Math]::Sin($a)))
+}
+$c.G.FillPolygon((New-Object System.Drawing.SolidBrush (Rgb 246 190 40)), $pts)
+$c.G.DrawPolygon((New-Object System.Drawing.Pen (Rgb 176 122 16), 2), $pts)
+Save-Canvas $c "star.png"
+
+# netdrive.png: a drive on a cable, for a site in the folder tree.
+$c = New-Canvas 48 48
+$case = Round-Rect 5 8 38 20 4
+$c.G.FillPath((New-Object System.Drawing.SolidBrush (Rgb 92 150 214)), $case)
+$c.G.DrawPath((New-Object System.Drawing.Pen (Rgb 46 92 150), 2), $case)
+$c.G.FillEllipse((New-Object System.Drawing.SolidBrush (Rgb 120 220 120)), 33, 15, 6, 6)
+$cable = New-Object System.Drawing.Pen (Rgb 70 76 84), 3
+$c.G.DrawLine($cable, 24, 28, 24, 37)
+$c.G.DrawLine($cable, 10, 38, 38, 38)
+Save-Canvas $c "netdrive.png"
+
 # back.png, forward.png, up.png: white arrows for the dark bar.
 function Draw-Arrow([string]$name, [single[]]$pts) {
     $c = New-Canvas 24 24

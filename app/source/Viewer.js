@@ -52,11 +52,24 @@ enyo.kind({
 		this.$.count.setContent((index + 1) + " of " + this.pictures.length);
 		this.$.prev.setDisabled(index === 0);
 		this.$.next.setDisabled(index === this.pictures.length - 1);
+		if (FM.isNet(e.path) && !e.local) {
+			// On a site: brought down first (fetcher, set by the app).
+			var self = this;
+			this.$.stage.applyStyle("background-image", null);
+			this.$.title.setContent(e.n + " (loading…)");
+			this.fetcher(e, function() {
+				if (self.pictures[self.index] === e) {
+					self.showAt(self.index);
+				}
+			});
+			return;
+		}
+		var path = e.local || e.path;
 		// The system scales a picture down to fit the screen, which keeps a
 		// large photo from being loaded whole. It does not keep a GIF moving,
 		// so those are shown as they are.
 		this.$.stage.applyStyle("background-image",
-			e.ext === "gif" ? "url('" + FM.fileUrl(e.path).replace(/'/g, "%27") + "')" : FM.thumbUrl(e.path, 1024));
+			e.ext === "gif" ? "url('" + FM.fileUrl(path).replace(/'/g, "%27") + "')" : FM.thumbUrl(path, 1024));
 	},
 
 	prevClick: function() {

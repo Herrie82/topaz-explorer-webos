@@ -40,6 +40,12 @@
 	background: -webkit-gradient(linear, left top, left bottom, from(#a83232), to(#6b1b1b));
 }
 
+/* On a network drive. */
+.fm-bottom-net {
+	background: #1f6b2c;
+	background: -webkit-gradient(linear, left top, left bottom, from(#2f9440), to(#1a5a24));
+}
+
 .fm-status {
 	color: #e4e4e4;
 	font-size: 14px;
@@ -530,4 +536,29 @@
 
 .fm-detail-value {
 	word-wrap: break-word;
+}
+
+.fm-tree-icon-star {
+	background-image: url(../images/star.png);
+}
+
+.fm-tree-icon-net {
+	background-image: url(../images/netdrive.png);
+}
+
+/* Share Over FTP */
+.fm-share-where {
+	margin: 4px 0 10px;
+	font-size: 20px;
+	font-weight: bold;
+	-webkit-user-select: text;
+}
+
+.fm-share-row {
+	margin: 2px 0;
+}
+
+.fm-share-label {
+	width: 110px;
+	font-size: 16px;
 }

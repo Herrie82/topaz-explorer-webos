@@ -1,22 +1,55 @@
 # To do
 
-## Network folders (FTP), 2026-10-15
+## Network folders (FTP, SFTP, SMB) and sharing, 2026-10-17
 
-Browsing: type an ftp:// or ftps:// address through the globe button in the
-path bar; the name and password are asked for when the server wants them and
-the address did not carry them. Copy brings things down from a site and takes
-them up to one (Cut = move: the source goes only when every part arrived).
-Delete, rename and New Folder work on the site. Everything runs through the
-system's curl (7.88.1 on webOS CE), one transfer at a time, so a copy is as
-fast as one curl per file (~50 small files a minute over the LAN, roughly).
+Type a folder or an address in the path bar (tap the globe or the path's empty
+end): ftp://, ftps://, sftp://, smb://, or \server\share. The name and
+password are asked for when the server wants them; an SFTP server's key
+fingerprint is shown to be trusted the first time and refused if it changes
+(kept in /var/preferences/com.palm.stark.files/known_hosts.json). Keys in
+/media/internal/.ssh (id_ed25519, id_ecdsa, id_rsa) are tried before the
+password. SFTP opens in the server's home folder; an SMB server's top lists its
+shared folders. The bottom bar is green on a network drive.
 
-Not yet: SFTP and SMB. The system curl has no sftp (and the curl-tls13
-package's libcurl does not either), so SFTP waits on building libssh2 + curl
-with the PDK like 7za. SMB needs a curl built with libsmb or a small
-libsmbclient tool; the kernel's own CIFS mount cannot talk to modern servers
-(Samba 4 rejects its SMB1). Also not yet: copying from one site folder to
-another (go through My TouchPad), opening a file straight from a site (copy
-it first), searching below a site folder, and compressing on a site.
+FTP runs through the system's curl. SFTP and SMB 2/3 run through bin/topaz-net
+(native/build-net.sh: libssh2 + OpenSSL 1.1.1w, libsmb2 6.0.0), one per
+connection kept open, plus one per job. Checked on the TouchPad against the
+homelab server: SFTP listing, upload of a folder tree, Keep Both naming, move
+down (checksums match), rename, recursive delete, host key trust; SMB share
+list, listing, upload, move down (checksums match), delete, names with % and
+non-ASCII letters, a refused guest asking for a name. A 3 MB file went up
+and came back down over SFTP in about 2 seconds over Wi-Fi.
+
+Favorites: "Add to Favorites" in the app menu keeps the folder shown (local or
+on a site, with the site's sign-in) at the top of the folder tree.
+
+Sharing: "Share Over FTP" in the app menu serves /media/internal (service/ftpd.js,
+its own process, so it outlives the app). One name and password, read-only if
+chosen, port 2121 and passive ports 50100-50119 let through the firewall while
+it runs; it keeps the TouchPad awake while on. Checked from Windows with curl:
+listing, MLSD, uploads and downloads with matching checksums (~3 MB/s), resume,
+rename, folders, a wrong password refused, `..` cannot leave the storage.
+
+Through the TouchPad (a staging folder in /media/internal/.topaz-explorer,
+emptied after): copying and moving between two sites, copying within one
+site (a move within one site is a rename), compressing and extracting on a
+site. Tapping a file on a site brings a copy into .topaz-explorer/cache (kept
+two days, reused when the size matches) and opens it: pictures in the viewer
+(each brought down as it is shown), text in the editor (saving sends it back
+up), packages to Preware, anything else to its app. Search Subfolders works on
+a site (2,000 folders or a minute at most). Hold a favorite to rename or
+remove it. All checked through the service on the TouchPad on 2026-10-17;
+opening a text file from SFTP was checked by the user.
+
+Fixed 2026-10-17: the FTP server and topaz-net kept the file service's
+connections to the system message hub, so after the service went to sleep
+the hub still saw it and the app's calls hung. Both now close what they
+inherit. An SMB server that is not there now fails in seconds, not 40.
+
+Not yet: active-mode FTP from a client behind its own firewall did not connect
+(passive does); SFTP and SMB on LuneOS (topaz-net is built for legacy webOS);
+anything staged needs room for it on the storage, and FAT's 4 GB limit
+applies to each file going through.
 
 ## Checked on the TouchPad (2026-10-10)
 

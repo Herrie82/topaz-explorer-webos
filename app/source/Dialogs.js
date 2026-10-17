@@ -56,15 +56,16 @@ enyo.kind({
 	}
 });
 
-// Ask for the name and password a site wants: ask(root, user, callback(user, pass)).
-// The dialog closes as soon as Connect is tapped; a refused sign-in asks again.
+// Ask for the name and password a site wants: ask(root, user, callback(user, pass),
+// cancelled()). The dialog closes as soon as Connect is tapped; a refused
+// sign-in asks again.
 enyo.kind({
 	name: "FM.LoginDialog",
 	kind: enyo.ModalDialog,
 	lazy: false,
 	components: [
 		{name: "user", kind: "Input", autoCapitalize: "lowercase", autocorrect: false, spellcheck: false,
-			hint: "Name", onkeydown: "keyDown"},
+			hint: "Name (or DOMAIN\\name)", onkeydown: "keyDown"},
 		{name: "pass", kind: "PasswordInput", hint: "Password", onkeydown: "keyDown"},
 		{name: "problem", className: "fm-dialog-problem", showing: false},
 		{kind: "HFlexBox", className: "fm-dialog-buttons", components: [
@@ -73,8 +74,9 @@ enyo.kind({
 		]}
 	],
 
-	ask: function(root, user, callback) {
+	ask: function(root, user, callback, cancelled) {
 		this.callback = callback;
+		this.cancelled = cancelled;
 		this.setCaption("Connect to " + root);
 		this.$.user.setValue(user);
 		this.$.pass.setValue("");
@@ -110,10 +112,14 @@ enyo.kind({
 
 	cancelClick: function() {
 		this.close();
+		if (this.cancelled) {
+			this.cancelled();
+		}
 	}
 });
 
-// A question: ask(title, message, okCaption, callback()). The callback runs only on yes.
+// A question: ask(title, message, okCaption, callback(), cancelled()). The callback
+// runs only on yes; cancelled, if given, on Cancel.
 enyo.kind({
 	name: "FM.ConfirmDialog",
 	kind: enyo.ModalDialog,
@@ -126,8 +132,9 @@ enyo.kind({
 		]}
 	],
 
-	ask: function(title, message, okCaption, callback) {
+	ask: function(title, message, okCaption, callback, cancelled) {
 		this.callback = callback;
+		this.cancelled = cancelled;
 		this.setCaption(title);
 		this.$.message.setContent(message);
 		this.$.ok.setCaption(okCaption);
@@ -141,6 +148,9 @@ enyo.kind({
 
 	cancelClick: function() {
 		this.close();
+		if (this.cancelled) {
+			this.cancelled();
+		}
 	}
 });
 
@@ -297,6 +307,102 @@ enyo.kind({
 		if (!this.isOpen) {
 			this.openAtCenter();
 		}
+	},
+
+	doneClick: function() {
+		this.close();
+	}
+});
+
+// Sharing this device's storage over FTP: present(status) with the service's
+// shareStatus answer. Start and Stop send onShare(settings) with
+// {on, user, pass, port, readOnly}; the app answers with showStatus or
+// showProblem.
+enyo.kind({
+	name: "FM.ShareDialog",
+	kind: enyo.ModalDialog,
+	lazy: false,
+	caption: "Share Over FTP",
+	events: {
+		onShare: ""
+	},
+	components: [
+		{name: "state", className: "fm-dialog-text"},
+		{name: "where", className: "fm-share-where", showing: false},
+		{kind: "HFlexBox", align: "center", className: "fm-share-row", components: [
+			{content: "Name", className: "fm-share-label"},
+			{name: "user", kind: "Input", flex: 1, autoCapitalize: "lowercase", autocorrect: false, spellcheck: false}
+		]},
+		{kind: "HFlexBox", align: "center", className: "fm-share-row", components: [
+			{content: "Password", className: "fm-share-label"},
+			{name: "pass", kind: "Input", flex: 1, autoCapitalize: "lowercase", autocorrect: false, spellcheck: false}
+		]},
+		{kind: "HFlexBox", align: "center", className: "fm-share-row", components: [
+			{content: "Port", className: "fm-share-label"},
+			{name: "port", kind: "Input", flex: 1, autocorrect: false, spellcheck: false}
+		]},
+		{kind: "HFlexBox", align: "center", className: "fm-share-row", components: [
+			{content: "Read-only", flex: 1, className: "fm-share-label"},
+			{name: "readOnly", kind: "ToggleButton", onLabel: "Yes", offLabel: "No"}
+		]},
+		{name: "problem", className: "fm-dialog-problem", showing: false},
+		{kind: "HFlexBox", className: "fm-dialog-buttons", components: [
+			{kind: "Button", caption: "Done", flex: 1, onclick: "doneClick"},
+			{name: "go", kind: "Button", caption: "Start Sharing", flex: 1, className: "enyo-button-affirmative", onclick: "goClick"}
+		]}
+	],
+
+	present: function(s) {
+		this.showStatus(s);
+		if (!this.isOpen) {
+			this.openAtCenter();
+		}
+	},
+
+	showStatus: function(s) {
+		this.on = !!s.on;
+		this.$.user.setValue(s.user || "");
+		this.$.pass.setValue(s.pass || "");
+		this.$.port.setValue(String(s.port || ""));
+		this.$.readOnly.setState(!!s.readOnly);
+		this.showProblem("");
+		this.$.go.setDisabled(false);
+		this.$.go.setCaption(this.on ? "Stop Sharing" : "Start Sharing");
+		this.$.go.addRemoveClass("enyo-button-affirmative", !this.on);
+		this.$.go.addRemoveClass("enyo-button-negative", this.on);
+		if (!this.on) {
+			this.$.state.setContent("Other computers and phones on the same network can open the files on this " +
+				FM.DEVICE_NAME + " with an FTP app or a file manager. It stays on, and keeps the " +
+				FM.DEVICE_NAME + " awake, until it is stopped here.");
+			this.$.where.hide();
+			return;
+		}
+		var addrs = s.addresses || [];
+		var lines = [];
+		for (var i = 0; i < addrs.length; i++) {
+			lines.push("ftp://" + addrs[i] + ":" + s.port);
+		}
+		this.$.state.setContent("Sharing" + (s.readOnly ? ", read-only" : "") + ". Connect to" +
+			(s.clients ? " (" + FM.count(s.clients, "connection") + " now)" : "") + ":");
+		this.$.where.setContent(lines.length ? lines.join("<br>") : "(no network: connect to Wi-Fi first)");
+		this.$.where.show();
+	},
+
+	showProblem: function(text) {
+		this.$.problem.setContent(text);
+		this.$.problem.setShowing(!!text);
+		this.$.go.setDisabled(false);
+	},
+
+	goClick: function() {
+		this.$.go.setDisabled(true);
+		this.doShare({
+			on: !this.on,
+			user: String(this.$.user.getValue() || "").replace(/^\s+|\s+$/g, ""),
+			pass: String(this.$.pass.getValue() || ""),
+			port: String(this.$.port.getValue() || "").replace(/\s+/g, ""),
+			readOnly: this.$.readOnly.getState()
+		});
 	},
 
 	doneClick: function() {

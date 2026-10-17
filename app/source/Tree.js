@@ -1,6 +1,7 @@
-/* The folder tree on the left: the device's storage and, below it, the whole
-	system; every folder, opened level by
-	level. Only the rows on screen exist; the tree itself is kept as plain data. */
+/* The folder tree on the left: Favorites, when there are any, then the
+	device's storage and, below it, the whole system; every folder, opened level
+	by level. Only the rows on screen exist; the tree itself is kept as plain
+	data. */
 enyo.kind({
 	name: "FM.Tree",
 	kind: enyo.VFlexBox,
@@ -11,7 +12,9 @@ enyo.kind({
 	},
 	events: {
 		// A folder was tapped: (path)
-		onPick: ""
+		onPick: "",
+		// A favorite was held, to rename or remove it: (path)
+		onFavoriteHold: ""
 	},
 	components: [
 		{name: "svc", kind: "FM.Service"},
@@ -35,8 +38,21 @@ enyo.kind({
 			{path: FM.ROOT, name: FM.ROOT_NAME, depth: 0, open: false, kids: null, hasKids: true},
 			{path: FM.SYSTEM, name: FM.SYSTEM_NAME, depth: 0, open: false, kids: null, hasKids: true}
 		];
+		// The Favorites heading and the places under it (FM.favorites).
+		this.favHead = {name: "Favorites", depth: 0, open: true, head: true, hasKids: true};
+		this.favs = [];
 		this.rows = this.roots.slice(0);
 		this.current = "";
+		this.setFavorites(FM.favorites());
+	},
+
+	// The places to show under Favorites: [{name, path}].
+	setFavorites: function(list) {
+		this.favs = [];
+		for (var i = 0; i < list.length; i++) {
+			this.favs.push({path: list[i].path, name: list[i].name, depth: 1, fav: true, hasKids: false});
+		}
+		this.flatten();
 	},
 
 	// The storage's name changed (FM.setDeviceName): show the new one.
@@ -119,6 +135,12 @@ enyo.kind({
 				}
 			}
 		}
+		if (this.favs.length) {
+			rows.push(this.favHead);
+			if (this.favHead.open) {
+				rows.push.apply(rows, this.favs);
+			}
+		}
 		add(this.roots[0]);
 		add(this.roots[1]);
 		this.rows = rows;
@@ -132,6 +154,11 @@ enyo.kind({
 	// Mark a folder as the one being shown, opening the tree down to it.
 	reveal: function(path) {
 		this.current = path;
+		if (FM.isNet(path)) {
+			// Sites are not in the tree; a favorite may be.
+			this.flatten();
+			return;
+		}
 		var trail = FM.trail(path);
 		var self = this;
 		var at = 0;
@@ -168,6 +195,9 @@ enyo.kind({
 
 	// A folder's contents changed: read its folders again if they are in the tree.
 	reload: function(path) {
+		if (FM.isNet(path)) {
+			return;
+		}
 		var node = this.find(path);
 		var self = this;
 		if (node && node.kids) {
@@ -191,16 +221,23 @@ enyo.kind({
 		this.$.row.addRemoveClass("fm-tree-current", node.path === this.current);
 		this.$.indent.applyStyle("width", (node.depth * 18) + "px");
 		this.$.arrow.setClassName("fm-arrow" + (node.hasKids ? (node.open ? " fm-arrow-open" : " fm-arrow-shut") : ""));
-		this.$.icon.setClassName("fm-tree-icon" + (node.depth > 0 ? "" :
-			(node.path === FM.ROOT ? " fm-tree-icon-device" : " fm-tree-icon-system")));
+		var icon = "";
+		if (node.head) {
+			icon = " fm-tree-icon-star";
+		} else if (node.fav) {
+			icon = FM.isNet(node.path) ? " fm-tree-icon-net" : "";
+		} else if (node.depth === 0) {
+			icon = node.path === FM.ROOT ? " fm-tree-icon-device" : " fm-tree-icon-system";
+		}
+		this.$.icon.setClassName("fm-tree-icon" + icon);
 		this.$.name.setContent(node.name);
 		return true;
 	},
 
 	toggle: function(node) {
 		var self = this;
-		if (node.open) {
-			node.open = false;
+		if (node.open || node.head) {
+			node.open = !node.open;
 			this.flatten();
 		} else if (node.kids) {
 			node.open = true;
@@ -222,9 +259,42 @@ enyo.kind({
 		return true;
 	},
 
+	// A touch that rests on a favorite offers to rename or remove it.
+	mouseholdpulseHandler: function(inSender, inEvent) {
+		if (!inEvent || inEvent.holdTime < FM.HOLD_MS || this.heldStart === inEvent.holdStart) {
+			return;
+		}
+		var node = this.rows[inEvent.rowIndex];
+		if (!node || !node.fav) {
+			return;
+		}
+		this.heldStart = inEvent.holdStart;
+		// The tap that follows lifting the finger is part of this hold.
+		this.swallowTap = true;
+		this.doFavoriteHold(node.path);
+	},
+
+	mousereleaseHandler: function() {
+		if (this.swallowTap) {
+			var self = this;
+			setTimeout(function() {
+				self.swallowTap = false;
+			}, 350);
+		}
+	},
+
 	rowClick: function(inSender, inEvent) {
 		var node = this.rows[inEvent.rowIndex];
+		if (this.swallowTap) {
+			this.swallowTap = false;
+			return;
+		}
 		if (!node) {
+			return;
+		}
+		if (node.head) {
+			// The Favorites heading opens and closes.
+			this.toggle(node);
 			return;
 		}
 		if (node.path === this.current && node.hasKids) {

@@ -319,8 +319,9 @@ enyo.kind({
 			if (!e) {
 				continue;
 			}
-			// Photos show themselves; everything else shows its kind.
-			var picture = FM.isPicture(e);
+			// Photos show themselves (not those on a site, which are not here to
+			// look at); everything else shows its kind.
+			var picture = FM.isPicture(e) && !FM.isNet(e.path);
 			icon.setClassName("fm-big-icon " + (e.d ? "fm-icon-folder" : (picture ? "fm-icon-picture" : "fm-icon-file")));
 			icon.applyStyle("background-image", picture ? FM.thumbUrl(e.path, 64) : null);
 			tag.setShowing(!!e.tag && !picture);

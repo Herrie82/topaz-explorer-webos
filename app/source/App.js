@@ -15,9 +15,10 @@ enyo.kind({
 					{name: "forward", kind: "IconButton", icon: "images/forward.png", className: "enyo-button-dark fm-nav", onclick: "goForward"},
 					{name: "up", kind: "IconButton", icon: "images/up.png", className: "enyo-button-dark fm-nav", onclick: "goUp"},
 					{name: "net", kind: "IconButton", icon: "images/net.png", className: "enyo-button-dark fm-nav", onclick: "netClick"},
-					{name: "crumbs", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs"},
+					// Tapping the path's empty end turns it into a box for typing a path or an address.
+					{name: "crumbs", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs", onclick: "netClick"},
 					{name: "addrBar", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs", showing: false, components: [
-						{name: "addr", kind: "Input", flex: 1, className: "fm-addr", hint: "ftp://server or ftp://server/folder",
+						{name: "addr", kind: "Input", flex: 1, className: "fm-addr", hint: "A folder, or ftp://, sftp://, smb:// and a server",
 							autoCapitalize: "lowercase", autocorrect: false, spellcheck: false, onkeydown: "addrKey"},
 						{kind: "Button", caption: "Go", className: "enyo-button-blue fm-go", onclick: "netGo"}
 					]},
@@ -27,7 +28,7 @@ enyo.kind({
 				]},
 
 				{kind: "HFlexBox", flex: 1, components: [
-					{name: "tree", kind: "FM.Tree", onPick: "treePick"},
+					{name: "tree", kind: "FM.Tree", onPick: "treePick", onFavoriteHold: "favoriteHold"},
 					{name: "filesBox", kind: "VFlexBox", flex: 1, components: [
 						{name: "searchBar", kind: "HFlexBox", align: "center", className: "fm-searchbar", showing: false, components: [
 							{name: "searchNote", flex: 1, className: "fm-one-line"},
@@ -69,6 +70,10 @@ enyo.kind({
 			{name: "pack", caption: "Compress", onclick: "packClick"},
 			{name: "info", caption: "Details", onclick: "detailsClick"}
 		]},
+		{name: "favMenu", kind: "Menu", lazy: false, components: [
+			{caption: "Rename", onclick: "favRenameClick"},
+			{caption: "Remove from Favorites", onclick: "favRemoveClick"}
+		]},
 		{name: "archiveMenu", kind: "Menu", lazy: false, components: [
 			{name: "extractTo", caption: "Extract to a Folder", onclick: "extractToFolder"},
 			{caption: "Extract Here", onclick: "extractHere"}
@@ -80,6 +85,8 @@ enyo.kind({
 			{caption: "Size", sortKey: "size", onclick: "sortMenuPicked"}
 		]},
 		{kind: "AppMenu", lazy: false, components: [
+			{name: "favItem", caption: "Add to Favorites", onclick: "toggleFavorite"},
+			{caption: "Share Over FTP", onclick: "shareClick"},
 			{name: "hiddenItem", caption: "Show Hidden Files", onclick: "toggleHidden"},
 			{name: "systemItem", caption: "Allow System Changes", onclick: "toggleSystem"},
 			{caption: "Refresh", onclick: "refreshClick"}
@@ -89,7 +96,8 @@ enyo.kind({
 		{name: "confirmDialog", kind: "FM.ConfirmDialog"},
 		{name: "conflictDialog", kind: "FM.ConflictDialog"},
 		{name: "progressDialog", kind: "FM.ProgressDialog", onCancel: "cancelJob"},
-		{name: "detailsDialog", kind: "FM.DetailsDialog"}
+		{name: "detailsDialog", kind: "FM.DetailsDialog"},
+		{name: "shareDialog", kind: "FM.ShareDialog", onShare: "shareChange"}
 	],
 
 	create: function() {
@@ -102,9 +110,9 @@ enyo.kind({
 		this.free = -1;
 		this.loads = 0;
 		this.wakes = 0;
-		// The site whose folder is being shown, when there is one:
-		// {id, root: "ftp://host:port", user, pass}. Session only.
-		this.net = null;
+		// The sites signed in to, by address ("sftp://host:port"):
+		// {id, root, user, pass, home}. Session only.
+		this.nets = {};
 		// Changes outside the storage are allowed. Off again at every start.
 		this.system = false;
 		this.awake = false;
@@ -121,6 +129,11 @@ enyo.kind({
 			return;
 		}
 		this.begun = true;
+		// Pictures on a site are brought down one at a time as they are shown.
+		var self = this;
+		this.$.viewer.fetcher = function(e, done) {
+			self.fetchQuietly(e, done);
+		};
 		this.$.files.setView(FM.pref("view", "details"));
 		this.$.files.setSortKey(FM.pref("sortKey", "name"));
 		this.$.files.setSortDown(FM.pref("sortDown", "0") === "1");
@@ -204,15 +217,13 @@ enyo.kind({
 		path = path.replace(/\/+$/, "") || FM.ROOT;
 		if (FM.isNet(path)) {
 			// A site address: connect first, then show its folder.
-			var parts = FM.parseNet(path);
 			var self = this;
-			if (parts) {
-				this.netConnect(parts, function(ok) {
-					if (ok) {
-						self.go(path);
-					}
-				});
-			}
+			this.openAddress(path, function(ok) {
+				if (!ok && !self.path) {
+					// Nothing is shown yet: show the storage instead.
+					self.go(FM.ROOT, "start");
+				}
+			});
 			return true;
 		}
 		this.go(path);
@@ -281,19 +292,24 @@ enyo.kind({
 			self.$.files.showFolder(entries);
 			self.$.tree.reveal(path);
 			self.showStatus();
-			if (self.showFirst) {
-				// Launched with {path: folder, show: name}: open that file from it.
-				var wanted = self.showFirst;
-				self.showFirst = "";
-				for (var k = 0; k < entries.length; k++) {
-					if (entries[k].n === wanted) {
-						self.openEntry(self, entries[k]);
-						break;
-					}
-				}
-			}
+			self.openFirst(entries);
 		});
 		this.readSpace();
+	},
+
+	// Launched with {path: folder, show: name}: open that file from it.
+	openFirst: function(entries) {
+		if (!this.showFirst) {
+			return;
+		}
+		var wanted = this.showFirst;
+		this.showFirst = "";
+		for (var k = 0; k < entries.length; k++) {
+			if (entries[k].n === wanted) {
+				this.openEntry(this, entries[k]);
+				break;
+			}
+		}
 	},
 
 	refreshClick: function() {
@@ -330,7 +346,7 @@ enyo.kind({
 	},
 
 	goUp: function() {
-		if (this.path === FM.ROOT || (this.net && this.path === this.net.root)) {
+		if (this.path === FM.ROOT || (FM.isNet(this.path) && this.path === FM.netRootOf(this.path))) {
 			return;
 		}
 		this.go(FM.parentOf(this.path));
@@ -391,16 +407,23 @@ enyo.kind({
 
 	crumbClick: function(inSender) {
 		this.go(inSender.crumbPath);
+		// Handled: the path bar around it is not tapped.
+		return true;
 	},
 
-	// ---- sites (FTP) ----
+	// ---- sites (FTP, SFTP, SMB) ----
 
-	// The globe was tapped: type an address instead of tapping the path.
+	// The site a path is on, if it is signed in to: {id, root, user, pass, home}.
+	siteFor: function(path) {
+		return this.nets[FM.netRootOf(path)] || null;
+	},
+
+	// The globe, or the path's empty end, was tapped: type a path or an
+	// address in place of the path.
 	netClick: function() {
-		var net = this.net && this.path.indexOf(this.net.root) === 0 ? this.path : "";
 		this.$.crumbs.hide();
 		this.$.addrBar.show();
-		this.$.addr.setValue(net);
+		this.$.addr.setValue(this.path || "");
 		enyo.asyncMethod(this.$.addr, "forceFocusEnableKeyboard");
 	},
 
@@ -418,7 +441,7 @@ enyo.kind({
 		}
 	},
 
-	// An address was typed: connect to the site and show its folder.
+	// A path or an address was typed: go there.
 	netGo: function() {
 		var text = String(this.$.addr.getValue() || "").replace(/^\s+|\s+$/g, "");
 		if (!text) {
@@ -426,40 +449,85 @@ enyo.kind({
 			return;
 		}
 		if (text.charAt(0) === "/") {
-			// A local path works here too.
 			this.addrCancel();
-			this.go(text);
+			this.go(text.replace(/\/+$/, "") || "/");
 			return;
 		}
-		var parts = FM.parseNet(text);
-		if (!parts) {
-			FM.banner("Type an address like ftp://server/folder");
-			return;
+		if (/^\\\\[^\\]/.test(text)) {
+			// \\server\share, as Windows writes it.
+			text = "smb://" + text.substring(2).replace(/\\/g, "/");
 		}
-		if (parts.scheme !== "ftp" && parts.scheme !== "ftps") {
-			FM.banner("Only FTP servers can be opened so far");
+		if (!FM.parseNet(text)) {
+			FM.banner("Type a folder like /media/internal, or an address like sftp://server/folder");
 			return;
 		}
 		var self = this;
-		this.netConnect(parts, function(ok) {
-			if (!ok) {
-				return;
+		this.openAddress(text, function(ok) {
+			if (ok) {
+				self.addrCancel();
 			}
-			self.addrCancel();
-			self.go(self.net.root + parts.start);
 		});
 	},
 
-	// Sign in to a site, asking for the name and password when the server
-	// wants them and the address did not carry them. done(ok).
+	// Connect to a site (when not connected already) and show the folder an
+	// address names, or the folder the server starts in. done(ok), if given.
+	openAddress: function(text, done) {
+		var parts = FM.parseNet(text);
+		var self = this;
+		if (!parts) {
+			if (done) {
+				done(false);
+			}
+			return;
+		}
+		if (!this.nets[FM.netRoot(parts)]) {
+			// A server that is not there takes a few seconds to give up on.
+			FM.banner("Connecting to " + parts.host + "…");
+		}
+		this.netConnect(parts, function(ok, site) {
+			if (ok) {
+				var start = parts.start !== "/" ? parts.start : (site.home || "/");
+				self.go(site.root + (start === "/" ? "" : start));
+			}
+			if (done) {
+				done(ok);
+			}
+		});
+	},
+
+	// Sign in to a site. The name and password come from the address, or from a
+	// favorite on that site, or an earlier sign-in; when the server wants them
+	// and there are none, or they are refused, they are asked for. An SFTP
+	// server not seen before (or showing another key than before) is shown to
+	// be trusted first. done(ok, site).
 	netConnect: function(parts, done) {
 		var self = this;
-		function open(user, pass) {
-			var creds = user ? encodeURIComponent(user) + ":" + encodeURIComponent(pass) + "@" : "";
-			self.$.svc.ask("netOpen", {url: FM.netRoot(parts) + "/" + creds}, function(r) {
+		var root = FM.netRoot(parts);
+		var was = this.nets[root];
+		if (was && !parts.user) {
+			done(true, was);
+			return;
+		}
+		var kept = FM.favoriteLogin(root) || was || {};
+		var user = parts.user ? (parts.domain ? parts.domain + "\\" : "") + parts.user : (kept.user || "");
+		var pass = parts.user ? parts.pass : (kept.pass || "");
+		function open(u, p, trust) {
+			var creds = u ? encodeURIComponent(u) + ":" + encodeURIComponent(p) + "@" : "";
+			var url = parts.scheme + "://" + creds + parts.host + (parts.port ? ":" + parts.port : "") + "/";
+			self.$.svc.ask("netOpen", {url: url, trust: trust || ""}, function(r) {
+				if (!r.ok && r.hostkey) {
+					self.askTrust(root, r.hostkey, r.changed, function() {
+						open(u, p, r.hostkey);
+					}, function() {
+						done(false);
+					});
+					return;
+				}
 				if (!r.ok && r.login) {
-					self.$.loginDialog.ask(FM.netRoot(parts), user || "", function(u, p) {
-						open(u, p);
+					self.$.loginDialog.ask(root, u || "", function(u2, p2) {
+						open(u2, p2, trust);
+					}, function() {
+						done(false);
 					});
 					return;
 				}
@@ -468,40 +536,64 @@ enyo.kind({
 					done(false);
 					return;
 				}
-				self.net = {id: r.id, root: FM.netRoot(parts), user: user || "", pass: pass || ""};
-				done(true);
+				var site = {id: r.id, root: root, user: u || "", pass: p || "", home: r.home || "/"};
+				self.nets[root] = site;
+				done(true, site);
 			});
 		}
-		open(parts.user, parts.pass);
+		open(user, pass, "");
 	},
 
-	// Read the folder being shown on the connected site.
+	// An SFTP server's key is not known yet, or is not the one it showed before.
+	askTrust: function(root, fingerprint, changed, then, cancelled) {
+		this.$.confirmDialog.ask(changed ? "This server's identity changed" : "Trust this server?",
+			(changed ? "The server at " + root + " shows a different key than last time. If nobody changed " +
+				"the server, someone may be listening in between: do not connect. " :
+				"This is the first connection to " + root + ". ") +
+			"Its key's fingerprint is " + fingerprint + ".",
+			changed ? "Connect Anyway" : "Trust", then, cancelled);
+	},
+
+	// Read the folder being shown on a site, signing in first when need be
+	// (a favorite tapped, or the helper restarted).
 	loadNet: function(path, turn) {
 		var self = this;
-		if (!this.net || (path !== this.net.root && path.indexOf(this.net.root + "/") !== 0)) {
+		if (!this.siteFor(path)) {
 			this.entries = [];
 			this.$.files.showFolder([]);
-			this.$.files.showNote("Tap the globe and type the site's address to connect.");
+			this.$.files.showNote("Connecting to " + FM.netRootOf(path) + "…");
+			this.netConnect(FM.parseNet(FM.netRootOf(path)), function(ok) {
+				if (turn !== self.loads) {
+					return;
+				}
+				if (ok) {
+					self.load();
+				} else {
+					self.$.files.showNote("Not connected to " + FM.netRootOf(path) + ".");
+				}
+			});
 			return;
 		}
-		this.netList(path.substring(this.net.root.length) || "/", turn, false);
+		this.netList(path, turn, false);
 	},
 
-	netList: function(remote, turn, retry) {
+	netList: function(path, turn, retry) {
 		var self = this;
-		var id = this.net ? this.net.id : 0;
-		this.$.svc.ask("netList", {id: id, path: remote}, function(r) {
+		var site = this.siteFor(path);
+		var remote = path.substring(site.root.length) || "/";
+		this.$.svc.ask("netList", {id: site.id, path: remote}, function(r) {
 			if (turn !== self.loads) {
 				return;      // a later folder was asked for meanwhile
 			}
-			if (!r.ok && !retry && /no longer connected/.test(r.error) && self.net) {
+			if (!r.ok && !retry && /no longer connected/.test(r.error)) {
 				// The helper restarted; sign in again and try once more.
-				var parts = FM.parseNet(self.net.root) || {scheme: "ftp", host: ""};
-				parts.user = self.net.user;
-				parts.pass = self.net.pass;
+				var parts = FM.parseNet(site.root);
+				parts.user = site.user;
+				parts.pass = site.pass;
+				delete self.nets[site.root];
 				self.netConnect(parts, function(ok) {
 					if (ok && turn === self.loads) {
-						self.netList(remote, turn, true);
+						self.netList(path, turn, true);
 					}
 				});
 				return;
@@ -519,7 +611,113 @@ enyo.kind({
 			}
 			self.entries = entries;
 			self.$.files.showFolder(entries);
+			self.$.tree.reveal(path);
 			self.showStatus();
+			self.openFirst(entries);
+		});
+	},
+
+	// ---- favorites ----
+
+	// Add the folder being shown to Favorites, or take it away. A site's
+	// favorite keeps its sign-in, so a tap opens it without asking.
+	toggleFavorite: function() {
+		var path = this.path;
+		var list = FM.favorites();
+		var at = -1;
+		for (var i = 0; i < list.length; i++) {
+			if (list[i].path === path) {
+				at = i;
+			}
+		}
+		if (at >= 0) {
+			list.splice(at, 1);
+			FM.banner("Taken out of Favorites");
+		} else {
+			var fav = {name: this.favoriteName(path), path: path};
+			var site = FM.isNet(path) && this.siteFor(path);
+			if (site && site.user) {
+				fav.user = site.user;
+				fav.pass = site.pass;
+			}
+			list.push(fav);
+			FM.banner("Added to Favorites");
+		}
+		FM.setFavorites(list);
+		this.$.tree.setFavorites(list);
+		this.showChoices();
+	},
+
+	// A favorite in the folder tree was held: offer to rename or remove it.
+	favoriteHold: function(inSender, path) {
+		this.heldFavorite = path;
+		this.$.favMenu.openAtCenter();
+	},
+
+	favRenameClick: function() {
+		var path = this.heldFavorite;
+		var fav = FM.favoriteAt(path);
+		var self = this;
+		if (!fav) {
+			return;
+		}
+		this.$.nameDialog.ask("Rename Favorite", fav.name, "Rename", function(name) {
+			var list = FM.favorites();
+			for (var i = 0; i < list.length; i++) {
+				if (list[i].path === path) {
+					list[i].name = name;
+				}
+			}
+			FM.setFavorites(list);
+			self.$.tree.setFavorites(list);
+			self.$.nameDialog.done();
+		});
+	},
+
+	favRemoveClick: function() {
+		var list = FM.favorites();
+		for (var i = list.length - 1; i >= 0; i--) {
+			if (list[i].path === this.heldFavorite) {
+				list.splice(i, 1);
+			}
+		}
+		FM.setFavorites(list);
+		this.$.tree.setFavorites(list);
+		this.showChoices();
+	},
+
+	// "Photos", "nas", "Music on nas".
+	favoriteName: function(path) {
+		if (!FM.isNet(path)) {
+			return FM.nameOf(path);
+		}
+		var root = FM.netRootOf(path);
+		var host = root.replace(/^[a-z]+:\/\//i, "");
+		return path === root ? host : FM.nameOf(path) + " on " + host;
+	},
+
+	// ---- sharing over FTP ----
+
+	shareClick: function() {
+		var self = this;
+		this.$.svc.ask("shareStatus", {}, function(r) {
+			if (!r.ok) {
+				FM.banner(r.error);
+				return;
+			}
+			self.$.shareDialog.present(r);
+		});
+	},
+
+	shareChange: function(inSender, settings) {
+		var self = this;
+		this.$.svc.ask("share", settings, function(r) {
+			if (!r.ok) {
+				self.$.shareDialog.showProblem(r.error);
+				return;
+			}
+			self.$.shareDialog.showStatus(r);
+			FM.banner(r.on ? "Sharing over FTP" : "Stopped sharing");
 		});
 	},
 
@@ -547,8 +745,8 @@ enyo.kind({
 			this.go(e.path);
 			return;
 		}
-		if (FM.isNet(e.path)) {
-			FM.banner("Copy it to My TouchPad first, then open it from there");
+		if (FM.isNet(e.path) && !FM.isPicture(e) && !FM.isArchive(e)) {
+			this.openNet(e);
 			return;
 		}
 		if (FM.isPicture(e)) {
@@ -577,14 +775,56 @@ enyo.kind({
 		});
 	},
 
-	// ---- archives ----
-
-	// An archive was tapped: offer to unpack it.
-	askExtract: function(e) {
-		if (FM.isNet(e.path)) {
-			FM.banner("Copy the archive to My TouchPad to extract it");
+	// A file on a site was tapped: bring a copy down (kept for a while, so a
+	// second look is quick), then open that the way a file here would be. A
+	// text file saved in the editor goes back up to the site.
+	openNet: function(e) {
+		var site = this.siteFor(e.path);
+		var self = this;
+		if (!site) {
+			FM.banner("Open " + FM.netRootOf(e.path) + " again first");
 			return;
 		}
+		this.runJob("fetch", [e.path], "", "", {net: site.id, size: e.s}, null, function(local) {
+			var copy = FM.dress({n: e.n, d: 0, s: e.s, m: e.m}, FM.parentOf(local));
+			copy.remote = e.path;
+			if (FM.isText(copy)) {
+				self.editText(copy, false);
+			} else if (copy.ext === "ipk") {
+				self.installPackage(copy);
+			} else {
+				self.$.svc.openFile(local, function(r) {
+					if (!r.ok) {
+						self.editText(copy, true);
+					}
+				});
+			}
+		});
+	},
+
+	// A picture from a site for the viewer, without a progress dialog. done()
+	// once e.local is where the copy is.
+	fetchQuietly: function(e, done) {
+		var site = this.siteFor(e.path);
+		if (!site) {
+			FM.banner("Open " + FM.netRootOf(e.path) + " again first");
+			return;
+		}
+		this.$.svc.ask("netGet", {id: site.id, path: e.path.substring(site.root.length), size: e.s}, function(r) {
+			if (!r.ok) {
+				FM.banner(r.error);
+				return;
+			}
+			e.local = r.path;
+			done();
+		});
+	},
+
+	// ---- archives ----
+
+	// An archive was tapped: offer to unpack it. On a site, that is done by
+	// way of the device's storage, and what comes out goes back up.
+	askExtract: function(e) {
 		if (!this.canChange()) {
 			FM.banner("Copy the archive to " + FM.ROOT_NAME + " to extract it");
 			return;
@@ -601,14 +841,23 @@ enyo.kind({
 
 	extractToFolder: function() {
 		if (this.archive) {
-			this.runJob("extract", [this.archive.path], this.path, "", {folder: this.folderFor(this.archive.n)});
+			this.runJob("extract", [this.archive.path], this.path, "", this.netExtra({folder: this.folderFor(this.archive.n)}));
 		}
 	},
 
 	extractHere: function() {
 		if (this.archive) {
-			this.runJob("extract", [this.archive.path], this.path, "", {});
+			this.runJob("extract", [this.archive.path], this.path, "", this.netExtra({}));
 		}
+	},
+
+	// What a job on the folder shown needs to know about its site, if it is on one.
+	netExtra: function(extra) {
+		var site = FM.isNet(this.path) && this.siteFor(this.path);
+		if (site) {
+			extra.net = site.id;
+		}
+		return extra;
 	},
 
 	moreClick: function() {
@@ -626,7 +875,7 @@ enyo.kind({
 		}
 		var stem = picked.length === 1 ? (picked[0].d ? picked[0].n : this.folderFor(picked[0].n)) : FM.nameOf(dest);
 		this.$.nameDialog.ask("Compress (.zip, .7z or .tar)", stem + ".zip", "Compress", function(name) {
-			self.runJob("pack", paths, dest, "", {name: name}, function(error) {
+			self.runJob("pack", paths, dest, "", self.netExtra({name: name}), function(error) {
 				if (error) {
 					self.$.nameDialog.showProblem(error);
 				} else {
@@ -676,9 +925,27 @@ enyo.kind({
 				FM.banner(r.error);
 				return;
 			}
-			ed.saved = true;
-			self.$.editor.markSaved();
-			FM.banner("Saved");
+			if (!ed.entry.remote) {
+				ed.saved = true;
+				self.$.editor.markSaved();
+				FM.banner("Saved");
+				return;
+			}
+			var site = self.siteFor(ed.entry.remote);
+			if (!site) {
+				FM.banner("Saved here only: open " + FM.netRootOf(ed.entry.remote) + " again to send it back");
+				return;
+			}
+			self.$.svc.ask("netPut", {id: site.id, local: ed.entry.path,
+				path: ed.entry.remote.substring(site.root.length)}, function(r2) {
+				if (!r2.ok) {
+					FM.banner(r2.error);
+					return;
+				}
+				ed.saved = true;
+				self.$.editor.markSaved();
+				FM.banner("Saved to " + FM.netRootOf(ed.entry.remote).replace(/^[a-z]+:\/\//i, ""));
+			});
 		});
 	},
 
@@ -734,7 +1001,7 @@ enyo.kind({
 		this.$.forward.setDisabled(!this.forwards.length);
 		// The top of the site, like the top of the storage, has nothing above.
 		this.$.up.setDisabled(this.path === FM.ROOT ||
-			(!!this.net && this.path === this.net.root));
+			(FM.isNet(this.path) && this.path === FM.netRootOf(this.path)));
 	},
 
 	// The path as folders to tap. A long path keeps its last few.
@@ -773,7 +1040,7 @@ enyo.kind({
 			text += "  ·  " + FM.size(this.free) + " free";
 		}
 		if (FM.isNet(this.path)) {
-			text += this.net ? "  ·  FTP" : "";
+			text += this.siteFor(this.path) ? "  ·  " + FM.netKind(this.path) : "";
 		} else if (!FM.inStorage(this.path)) {
 			text += this.canChange() ? "  ·  System files: changes allowed" : "  ·  Read-only";
 		}
@@ -789,9 +1056,15 @@ enyo.kind({
 		var canChange = this.canChange();
 		this.$.systemItem.setCaption(this.system ? "Stop Allowing System Changes" : "Allow System Changes");
 		// A red bar wherever a slip could harm the system.
-		this.$.bar.addRemoveClass("fm-bottom-system", canChange && !FM.inStorage(this.path));
-		this.$.selBar.addRemoveClass("fm-bottom-system", canChange && !FM.inStorage(this.path));
+		var here = this.path || FM.ROOT;
+		var risky = canChange && !FM.isNet(here) && !FM.inStorage(here);
+		this.$.bar.addRemoveClass("fm-bottom-system", risky);
+		this.$.selBar.addRemoveClass("fm-bottom-system", risky);
+		// A green one on a network drive.
+		this.$.bar.addRemoveClass("fm-bottom-net", FM.isNet(here));
+		this.$.selBar.addRemoveClass("fm-bottom-net", FM.isNet(here));
 		this.$.newBtn.setShowing(canChange);
+		this.$.favItem.setCaption(FM.favoriteAt(this.path) ? "Remove from Favorites" : "Add to Favorites");
 		this.$.paste.setShowing(!!this.clip && canChange);
 		if (this.clip) {
 			this.$.paste.setCaption("Paste (" + this.clip.paths.length + ")");
@@ -824,7 +1097,8 @@ enyo.kind({
 	canChange: function() {
 		var path = this.path || FM.ROOT;
 		if (FM.isNet(path)) {
-			return !!this.net;
+			// An SMB server's top lists its shared folders, which are not changed from here.
+			return !!this.siteFor(path) && !(FM.netKind(path) === "SMB" && path === FM.netRootOf(path));
 		}
 		return FM.inStorage(path) || (this.system && !FM.live(path));
 	},
@@ -905,7 +1179,7 @@ enyo.kind({
 		this.$.files.setFilter(text);
 		this.$.searchBar.setShowing(!!text);
 		// The folders below a site are not searched.
-		this.$.deep.setShowing(!!text && !FM.isNet(this.path));
+		this.$.deep.setShowing(!!text);
 		this.$.searchNote.setContent("In this folder: names containing \"" + text + "\"");
 		this.showStatus();
 	},
@@ -914,12 +1188,16 @@ enyo.kind({
 		var text = this.searching;
 		var self = this;
 		var path = this.path;
-		if (!text || FM.isNet(path)) {
+		var site = FM.isNet(path) && this.siteFor(path);
+		if (!text || (FM.isNet(path) && !site)) {
 			return;
 		}
-		this.$.searchNote.setContent("Searching…");
+		this.$.searchNote.setContent(site ? "Searching the server… (this can take a while)" : "Searching…");
 		this.$.deep.hide();
-		this.$.svc.ask("search", {path: path, text: text, hidden: this.hidden}, function(r) {
+		var method = site ? "netSearch" : "search";
+		var params = site ? {id: site.id, path: path.substring(site.root.length) || "/", text: text, hidden: this.hidden} :
+			{path: path, text: text, hidden: this.hidden};
+		this.$.svc.ask(method, params, function(r) {
 			if (path !== self.path || text !== self.searching) {
 				return;
 			}
@@ -928,6 +1206,10 @@ enyo.kind({
 				return;
 			}
 			for (var i = 0; i < r.entries.length; i++) {
+				if (site) {
+					// The site gives its own paths.
+					r.entries[i].p = site.root + (r.entries[i].p === "/" ? "" : r.entries[i].p);
+				}
 				FM.dress(r.entries[i], r.entries[i].p);
 			}
 			self.deepShown = true;
@@ -975,7 +1257,7 @@ enyo.kind({
 		this.$.del.setDisabled(!count || !canChange);
 		this.$.more.setDisabled(!count);
 		this.$.rename.setDisabled(count !== 1 || !canChange);
-		this.$.pack.setDisabled(!canChange || FM.isNet(this.path));
+		this.$.pack.setDisabled(!canChange);
 	},
 
 	pickedPaths: function() {
@@ -1012,13 +1294,28 @@ enyo.kind({
 		if (!this.clip) {
 			return;
 		}
+		var extra = {};
 		if (FM.isNet(this.path) && FM.isNet(this.clip.from)) {
-			FM.banner("Copy from the site to My TouchPad first, then back up to the site");
+			// From one site to another, or to another folder of the same one.
+			var fromSite = this.siteFor(this.clip.from);
+			var toSite = this.siteFor(this.path);
+			if (!fromSite || !toSite) {
+				FM.banner("Open " + FM.netRootOf(fromSite ? this.path : this.clip.from) + " again first");
+				return;
+			}
+			extra.net = fromSite.id;
+			extra.toNet = toSite.id;
+			this.runJob(this.clip.op, this.clip.paths, this.path, "", extra);
 			return;
 		}
-		var extra = {};
-		if (FM.isNet(this.path) || FM.isNet(this.clip.from)) {
-			extra.net = this.net.id;
+		var netSide = FM.isNet(this.path) ? this.path : (FM.isNet(this.clip.from) ? this.clip.from : "");
+		if (netSide) {
+			var site = this.siteFor(netSide);
+			if (!site) {
+				FM.banner("Open " + FM.netRootOf(netSide) + " again first");
+				return;
+			}
+			extra.net = site.id;
 		}
 		this.runJob(this.clip.op, this.clip.paths, this.path, "", extra);
 	},
@@ -1028,7 +1325,7 @@ enyo.kind({
 		var path = this.path;
 		if (FM.isNet(path)) {
 			this.$.nameDialog.ask("New Folder", "New folder", "Create", function(name) {
-				self.$.svc.ask("netMkdir", {id: self.net.id, path: path, name: name}, function(r) {
+				self.$.svc.ask("netMkdir", {id: self.siteFor(path).id, path: path.substring(FM.netRootOf(path).length) || "/", name: name}, function(r) {
 					if (!r.ok) {
 						self.$.nameDialog.showProblem(r.error);
 						return;
@@ -1060,7 +1357,7 @@ enyo.kind({
 		var e = picked[0];
 		if (FM.isNet(e.path)) {
 			this.$.nameDialog.ask("Rename", e.n, "Rename", function(name) {
-				self.$.svc.ask("netRename", {id: self.net.id, path: e.path, name: name}, function(r) {
+				self.$.svc.ask("netRename", {id: self.siteFor(e.path).id, path: e.path.substring(FM.netRootOf(e.path).length), name: name}, function(r) {
 					if (!r.ok) {
 						self.$.nameDialog.showProblem(r.error);
 						return;
@@ -1096,7 +1393,7 @@ enyo.kind({
 			folders += picked[i].d;
 		}
 		this.$.confirmDialog.ask("Delete " + what + "?",
-			(FM.inStorage(this.path) ? "" : "This is part of the system. ") + (folders ? "Everything inside " + (folders === 1 && paths.length === 1 ? "the folder" : "the folders") +
+			(FM.inStorage(this.path) || FM.isNet(this.path) ? "" : "This is part of the system. ") + (folders ? "Everything inside " + (folders === 1 && paths.length === 1 ? "the folder" : "the folders") +
 				" is deleted too. " : "") + "This cannot be undone.",
 			"Delete", function() {
 				self.runJob("delete", paths, "", "");
@@ -1157,7 +1454,9 @@ enyo.kind({
 	// Start a job (copy, move, delete, extract, pack), with the dialog for things
 	// in the way and the progress dialog. extra: more for the service, such as
 	// {folder} or {name}. started(error): told whether it began, instead of a banner.
-	runJob: function(op, paths, dest, mode, extra, started) {
+	// after(result): for "fetch", what to do with the copy once it is here,
+	// instead of saying the job is done.
+	runJob: function(op, paths, dest, mode, extra, started, after) {
 		var self = this;
 		var params = {op: op, paths: paths, dest: dest, mode: mode, system: this.system};
 		for (var k in (extra || {})) {
@@ -1183,7 +1482,7 @@ enyo.kind({
 				});
 				return;
 			}
-			var job = {op: op, paths: paths, dest: dest, extra: extra || {}, shown: false};
+			var job = {op: op, paths: paths, dest: dest, extra: extra || {}, shown: false, after: after};
 			self.job = job;
 			self.doneSelecting();
 			// The dialog comes up unless the job is over almost at once.
@@ -1191,7 +1490,7 @@ enyo.kind({
 				if (self.job === job && !job.shown) {
 					job.shown = true;
 					self.$.progressDialog.begin({copy: "Copying", move: "Moving", "delete": "Deleting",
-						extract: "Extracting", pack: "Compressing"}[op]);
+						extract: "Extracting", pack: "Compressing", fetch: "Opening"}[op]);
 				}
 			}, 400);
 			self.watchJob();
@@ -1227,6 +1526,14 @@ enyo.kind({
 	},
 
 	jobDone: function(job, s) {
+		if (job.op === "fetch") {
+			if (s.ok && s.result && !s.cancelled) {
+				job.after(s.result);
+			} else if (!s.cancelled) {
+				FM.banner(s.ok ? "It could not be brought over from the server" : FM.APP_NAME + " lost touch with its helper");
+			}
+			return;
+		}
 		var did = {copy: "copied", move: "moved", "delete": "deleted", extract: "extracted", pack: "compressed"}[job.op];
 		var self = this;
 		if (s.ok && s.password) {

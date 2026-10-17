@@ -42,6 +42,22 @@ and a tappable path across the top. It reaches the whole system, not only the US
   then: the live folders `/proc`, `/sys` and `/dev`, and removing or renaming a top-level folder
   such as `/usr` whole.
 
+**Network folders**
+- Type a folder, or an `ftp://`, `ftps://`, `sftp://` or `smb://` address (or
+  `\server\share`), in the path bar: tap the globe, or the empty end of the
+  path. Copy, Cut, Paste, Delete, Rename and New Folder work between a server
+  and the TouchPad.
+- SFTP asks you to trust a server's key the first time and warns if it
+  changes; keys in `/media/internal/.ssh` are used when there are any. SMB
+  speaks SMB 2 and 3 and lists a server's shared folders.
+- "Add to Favorites" in the app menu puts the folder (or site, with its
+  sign-in) at the top of the folder tree.
+
+**Sharing**
+- "Share Over FTP" in the app menu lets other computers open the TouchPad's
+  storage with a name and password, optionally read-only. It keeps going when
+  the app is closed, and keeps the TouchPad awake, until stopped.
+
 ## Installing
 
 Install the `.ipk` from the [releases page](../../releases) with WebOS Quick Install, Preware
@@ -115,4 +131,7 @@ the images.
 
 ## License
 
-GPL-3.0 for everything but `7za` (see above).
+GPL-3.0 for everything but `7za` (see above) and the libraries inside
+`topaz-net`: libssh2 (BSD-3-Clause), OpenSSL 1.1.1 (OpenSSL license) and
+libsmb2 (LGPL-2.1 or later); `native/build-net.sh` builds it from their
+sources, and their licenses are in `native/`.

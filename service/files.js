@@ -712,7 +712,8 @@ function snapshot() {
 		failed: job.failed,                      // how many things could not be done
 		firstError: job.firstError,
 		note: job.note || "",                    // a sentence to show when it is over
-		password: !!job.password                 // the archive wants a password
+		password: !!job.password,                // the archive wants a password
+		result: job.result || ""                 // what a job made, where the app needs it (fetch)
 	};
 }
 
@@ -734,6 +735,9 @@ function finish() {
 	if (keepAwake) {
 		clearInterval(keepAwake);
 		keepAwake = null;
+	}
+	if (job.close) {
+		job.close();
 	}
 	log(job.op + " finished: " + job.doneItems + " of " + job.items + ", " + job.failed + " failed" +
 		(job.cancelled ? ", cancelled" : ""));
@@ -1072,28 +1076,99 @@ function moveSteps(steps, from, to, st, mode) {
 	});
 }
 
-// ---- network folders (FTP) -----------------------------------------------------
+// ---- network folders (FTP, SFTP, SMB) ------------------------------------------
 //
-// A folder on an FTP server is reached with the curl the system has
-// (/usr/bin/curl; on webOS CE it speaks FTP, FTPS and modern TLS). One site
-// at a time is "opened": the app signs in with netOpen and gets a number to
-// call the site by. The name and password go to curl as its configuration on
-// its input, never on the command line where another process could read them.
+// One site at a time per address is "opened": the app signs in with netOpen
+// and gets a number to call the site by.
+//
+// FTP and FTPS go through the curl the system has (/usr/bin/curl; on webOS CE
+// it speaks FTP, FTPS and modern TLS). The name and password go to curl as its
+// configuration on its input, never on the command line where another process
+// could read them.
+//
+// SFTP and SMB (2 and 3) go through bin/topaz-net, built from native/ with
+// libssh2 and libsmb2. One runs per connection and is kept for many requests,
+// a line at a time on its input and output (see native/topaz-net.c); the
+// sign-in goes the same way. A job gets a connection of its own, so the
+// folders can still be looked through while it runs.
+//
+// SFTP servers are known by their key: the first time, the app shows the
+// key's fingerprint and the person says whether to trust it; after that a
+// server showing another key is refused until they say so again.
 //
 // Copies go both ways through the same "start" command as local ones, with a
 // net number: from the site they download, to it they upload. A move takes
 // the source away at the end, but only when every part arrived.
 
-var nets = {};          // id -> {base, user, pass, extra}
+var nets = {};          // id -> site: {kind: "ftp"|"sftp"|"smb", root, ...}
 var netCount = 0;
 var CURL = "/usr/bin/curl";
 var NET_CONNECT = 10;   // seconds to reach the server
 var NET_LIST_TIME = 25; // seconds to list a folder
+// The SFTP and SMB program, started through the system's program loader like
+// 7za (installing a package does not keep the mark that makes it a program).
+var NET_TOOL = "/media/cryptofs/apps/usr/palm/services/com.palm.stark.files.service/bin/topaz-net";
+var NET_IDLE = 120000;  // a connection unused this long is closed
+// Private keys tried for SFTP before the password, when they are there.
+var SSH_KEYS = ["id_ed25519", "id_ecdsa", "id_rsa"];
 
-// The parts of "ftp://user:pass@host:port/start", or null.
+// ---- settings kept between runs (known SFTP servers, FTP sharing) ----
+
+var confAt = null;
+
+// The folder for them: the system's preferences, or a hidden folder on the
+// storage where that cannot be had.
+function confDir() {
+	if (confAt) {
+		return confAt;
+	}
+	var dirs = ["/var/preferences/com.palm.stark.files", ROOT + "/.topaz-explorer"];
+	for (var i = 0; i < dirs.length; i++) {
+		try {
+			fs.mkdirSync(dirs[i], 448 /* 0700 */);
+		} catch (e) {}
+		var st = stat(dirs[i]);
+		if (st && st.isDirectory()) {
+			confAt = dirs[i];
+			return confAt;
+		}
+	}
+	return null;
+}
+
+function readConf(name) {
+	var dir = confDir();
+	try {
+		return JSON.parse(fs.readFileSync(dir + "/" + name, "utf8")) || {};
+	} catch (e) {
+		return {};
+	}
+}
+
+// Written beside and then moved into place, so a failure never leaves half.
+function writeConf(name, value) {
+	var dir = confDir();
+	if (!dir) {
+		return false;
+	}
+	try {
+		fs.writeFileSync(dir + "/" + name + ".new", JSON.stringify(value));
+		fs.renameSync(dir + "/" + name + ".new", dir + "/" + name);
+		return true;
+	} catch (e) {
+		log("could not keep " + name + ": " + e);
+		return false;
+	}
+}
+
+// ---- addresses ----
+
+// The parts of "scheme://user:pass@host:port/start", or null. scheme is ftp,
+// ftps, sftp or smb; an SMB name may carry its domain: "DOMAIN;name" or
+// "DOMAIN\name".
 function parseNet(url) {
 	url = String(url || "").replace(/^\s+|\s+$/g, "");
-	var m = /^(ftps?):\/\/(?:([^:@\/]*)(?::([^@\/]*))?@)?([^\/:]+)(?::(\d+))?(\/.*)?$/i.exec(url);
+	var m = /^(ftps?|sftp|smb):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
 	if (!m) {
 		return null;
 	}
@@ -1104,16 +1179,34 @@ function parseNet(url) {
 			return s || "";
 		}
 	}
-	return {scheme: m[1].toLowerCase(), user: plain(m[2]), pass: plain(m[3]),
-		host: m[4], port: m[5] ? Number(m[5]) : 0, start: m[6] || "/"};
+	var info = m[2] || "";
+	var colon = info.indexOf(":");
+	var user = plain(colon >= 0 ? info.substring(0, colon) : info);
+	var pass = plain(colon >= 0 ? info.substring(colon + 1) : "");
+	var domain = "";
+	var cut = Math.max(user.indexOf(";"), user.indexOf("\\"));
+	if (cut > 0) {
+		domain = user.substring(0, cut);
+		user = user.substring(cut + 1);
+	}
+	return {scheme: m[1].toLowerCase(), user: user, pass: pass, domain: domain,
+		host: m[3], port: m[4] ? Number(m[4]) : 0, start: m[5] || "/"};
 }
 
 // Whether a path an app sent is a folder or file on a site.
 function isNetPath(path) {
-	return /^ftps?:\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb):\/\//i.test(String(path || ""));
 }
 
-// A tidy path on a site ("/dir/sub", "/" at worst), or null.
+// The path on the site of a full address: "ftp://host/a/b" -> "/a/b".
+function netPathOf(url) {
+	url = String(url || "");
+	var at = url.indexOf("/", url.indexOf("://") + 3);
+	return at < 0 ? "/" : url.substring(at);
+}
+
+// A tidy path on a site ("/dir/sub", "/" at worst), or null. Calls may give
+// the path alone or the whole address.
 function cleanNetPath(path) {
 	path = String(path || "/");
 	if (path.charAt(0) !== "/") {
@@ -1132,6 +1225,12 @@ function cleanNetPath(path) {
 	}
 	return "/" + out.join("/");
 }
+
+function netJoin(dir, name) {
+	return dir === "/" ? "/" + name : dir + "/" + name;
+}
+
+// ---- FTP through curl ----
 
 // A URL for something on the site: each part of the path encoded, slashes
 // kept, so names with spaces and the like reach the server whole. curl is
@@ -1210,6 +1309,7 @@ function runCurl(site, args, done) {
 		child.stdin.end();
 	} catch (e2) {}
 }
+
 // What to say when the site did not answer as hoped.
 function netWhyText(code, err) {
 	err = String(err || "");
@@ -1287,25 +1387,7 @@ function netDate(mon, day, rest) {
 	return new Date(Number(rest), mo, d).getTime();
 }
 
-// A name not used in a folder listing, like freeName but for the site.
-function freeNetName(taken, name, isDir) {
-	if (!taken[String(name).toLowerCase()]) {
-		return name;
-	}
-	var dot = isDir ? -1 : name.lastIndexOf(".");
-	var stem = dot > 0 ? name.substring(0, dot) : name;
-	var ext = dot > 0 ? name.substring(dot) : "";
-	for (var n = 2; n < 1000; n++) {
-		var tryName = stem + " (" + n + ")" + ext;
-		if (!taken[tryName.toLowerCase()]) {
-			return tryName;
-		}
-	}
-	return stem + " (" + new Date().getTime() + ")" + ext;
-}
-
-// The entries of a folder listing, or null with err when it failed.
-function netListOnce(site, path, done) {
+function ftpList(site, path, done) {
 	runCurl(site, ["--max-time", String(NET_LIST_TIME), netDirUrl(site, path)], function(code, err, out) {
 		if (code !== 0) {
 			done(netWhyText(code, err), null);
@@ -1323,37 +1405,426 @@ function netListOnce(site, path, done) {
 	});
 }
 
-// {url} -> {id}: open a site, trying the sign-in at once so a wrong name or
-// password is told here. The url may carry them: "ftp://user:pass@host/".
-// login: true in the answer means the app should ask for them.
+// ---- SFTP and SMB through topaz-net ----
+
+// How to start topaz-net: {program, args}, or null where it cannot run. It is
+// built for legacy webOS's soft-float ARM, as 7za is.
+function netTool() {
+	if (LUNEOS || !exists(NET_TOOL) || !exists(LOADER)) {
+		return null;
+	}
+	return {program: LOADER, args: [NET_TOOL]};
+}
+
+function netEscape(s) {
+	return String(s === undefined || s === null ? "" : s).replace(/[%\t\r\n]/g, function(c) {
+		var h = c.charCodeAt(0).toString(16).toUpperCase();
+		return "%" + (h.length < 2 ? "0" : "") + h;
+	});
+}
+
+function netUnescape(s) {
+	return String(s || "").replace(/%([0-9A-Fa-f]{2})/g, function(m, h) {
+		return String.fromCharCode(parseInt(h, 16));
+	});
+}
+
+// One running topaz-net, signed in to one site. Requests wait their turn.
+function ToolConn(site) {
+	this.site = site;
+	this.child = null;
+	this.queue = [];
+	this.current = null;
+	this.text = "";
+	this.timer = null;
+	this.openErr = null;
+	this.hostkey = "";
+}
+
+// request(fields, onBytes(n), done(err {kind, msg} or null, lines [fields]))
+ToolConn.prototype.request = function(fields, onBytes, done) {
+	if (this.timer) {
+		clearTimeout(this.timer);
+		this.timer = null;
+	}
+	this.queue.push({fields: fields, onBytes: onBytes, done: done, lines: []});
+	if (!this.child && !this.start()) {
+		this.gone({kind: "tool", msg: ""});
+		return;
+	}
+	this.pump();
+};
+
+ToolConn.prototype.start = function() {
+	var self = this;
+	var tool = netTool();
+	var child;
+	if (!tool) {
+		return false;
+	}
+	try {
+		child = child_process.spawn(tool.program, tool.args, {cwd: "/"});
+	} catch (e) {
+		log("topaz-net would not start: " + e);
+		return false;
+	}
+	this.child = child;
+	this.text = "";
+	this.openErr = null;
+	child.stdout.setEncoding("utf8");
+	child.stdout.on("data", function(d) {
+		self.text += d;
+		var at;
+		while ((at = self.text.indexOf("\n")) >= 0) {
+			var line = self.text.substring(0, at);
+			self.text = self.text.substring(at + 1);
+			self.line(line);
+		}
+	});
+	child.stderr.on("data", function(d) {
+		log("topaz-net: " + String(d).replace(/\s+$/, ""));
+	});
+	child.stdin.on("error", function() {});
+	child.on("exit", function() {
+		if (self.child === child) {
+			self.child = null;
+			self.gone(self.openErr || {kind: "connect", msg: "the connection was lost"});
+		}
+	});
+	var s = this.site;
+	this.queue.unshift({open: true, lines: [], done: function(err, lines) {
+		for (var i = 0; i < lines.length; i++) {
+			if (lines[i][0] === "hostkey") {
+				self.hostkey = lines[i][1];
+			}
+		}
+		if (err) {
+			// topaz-net ends itself; what waits fails with the same reason.
+			self.openErr = err;
+		}
+	}, fields: ["open", s.kind, s.host, s.port ? String(s.port) : "", s.user, s.pass, s.domain || "",
+		s.trust || "", (s.keys || []).join("|")]});
+	return true;
+};
+
+ToolConn.prototype.pump = function() {
+	if (this.current || !this.queue.length || !this.child) {
+		return;
+	}
+	if (this.openErr) {
+		return;      // the end is coming; gone() answers the rest
+	}
+	this.current = this.queue.shift();
+	var line = [];
+	for (var i = 0; i < this.current.fields.length; i++) {
+		line.push(netEscape(this.current.fields[i]));
+	}
+	try {
+		this.child.stdin.write(line.join("\t") + "\n");
+	} catch (e) {}
+};
+
+ToolConn.prototype.line = function(text) {
+	var f = text.split("\t");
+	for (var i = 0; i < f.length; i++) {
+		f[i] = netUnescape(f[i]);
+	}
+	var cur = this.current;
+	if (!cur) {
+		return;
+	}
+	if (f[0] === "ok" || f[0] === "err") {
+		this.current = null;
+		cur.done(f[0] === "err" ? {kind: f[1] || "io", msg: f[2] || ""} : null, cur.lines);
+		this.pump();
+		if (!this.current && !this.queue.length && this.child) {
+			var self = this;
+			this.timer = setTimeout(function() {
+				self.quit();
+			}, NET_IDLE);
+		}
+		return;
+	}
+	if (f[0] === "p") {
+		if (cur.onBytes) {
+			cur.onBytes(Number(f[1]) || 0);
+		}
+		return;
+	}
+	cur.lines.push(f);
+};
+
+// The program ended: everything waiting fails with the reason.
+ToolConn.prototype.gone = function(err) {
+	var list = (this.current ? [this.current] : []).concat(this.queue);
+	this.current = null;
+	this.queue = [];
+	for (var i = 0; i < list.length; i++) {
+		list[i].done(err, list[i].lines);
+	}
+};
+
+ToolConn.prototype.quit = function() {
+	if (this.timer) {
+		clearTimeout(this.timer);
+		this.timer = null;
+	}
+	if (this.child) {
+		try {
+			this.child.stdin.write("quit\n");
+			this.child.stdin.end();
+		} catch (e) {}
+	}
+};
+
+ToolConn.prototype.kill = function() {
+	if (this.child) {
+		try { this.child.kill(); } catch (e) {}
+	}
+};
+
+// What to say for a topaz-net failure.
+function netToolWhy(err) {
+	switch (err.kind) {
+	case "auth":
+		return "The server refused the name or password.";
+	case "connect":
+		return err.msg === "the connection was lost" ? "The connection to the server was lost." :
+			"Could not reach the server" + (err.msg && !/^could not reach/i.test(err.msg) ? " (" + err.msg + ")" : "") + ".";
+	case "hostkey":
+		return "The server's identity could not be confirmed.";
+	case "notfound":
+		return "That is not on the server, or the server would not show it.";
+	case "exists":
+		return "There is already something by that name there.";
+	case "denied":
+		return err.msg === "files go in a shared folder, not beside them" ||
+			err.msg === "shared folders themselves cannot be changed from here" ?
+			"Open one of the shared folders first: " + err.msg + "." :
+			"The server would not allow that.";
+	case "notempty":
+		return "The folder on the server is not empty.";
+	case "local":
+		return "It could not be written on this " + DEVICE + " (" + err.msg + ").";
+	case "tool":
+		return LUNEOS ? "SFTP and SMB folders are not available on LuneOS yet." :
+			"The SFTP and SMB helper is missing. Install " + APP_NAME + " again.";
+	}
+	log("topaz-net said " + err.kind + ": " + err.msg);
+	return "The server did not do what was asked" + (err.msg ? " (" + err.msg + ")" : "") + ".";
+}
+
+// ---- one way to work on any site ----
+// Each done(errorText, ...) gets "" when it worked.
+
+function siteList(site, path, done) {
+	if (site.kind === "ftp") {
+		ftpList(site, path, done);
+		return;
+	}
+	site.conn.request(["ls", path], null, function(err, lines) {
+		if (err) {
+			done(netToolWhy(err), null);
+			return;
+		}
+		var entries = [];
+		for (var i = 0; i < lines.length; i++) {
+			var f = lines[i];
+			if (f[0] === "e" && f[4]) {
+				entries.push({n: f[4], d: f[1] === "1" ? 1 : 0, s: Number(f[2]) || 0, m: (Number(f[3]) || 0) * 1000});
+			}
+		}
+		done("", entries);
+	});
+}
+
+function siteGet(site, remote, local, onBytes, done) {
+	if (site.kind === "ftp") {
+		runCurl(site, ["-o", local, netUrl(site, remote)], function(code, err) {
+			done(code === 0 ? "" : netWhyText(code, err));
+		});
+		return;
+	}
+	site.conn.request(["get", remote, local], onBytes, function(err) {
+		done(err ? netToolWhy(err) : "");
+	});
+}
+
+function sitePut(site, local, remote, onBytes, done) {
+	if (site.kind === "ftp") {
+		runCurl(site, ["-T", local, netUrl(site, remote)], function(code, err) {
+			done(code === 0 ? "" : netWhyText(code, err));
+		});
+		return;
+	}
+	site.conn.request(["put", local, remote], onBytes, function(err) {
+		done(err ? netToolWhy(err) : "");
+	});
+}
+
+// done(errorText, already): already is true when the folder was there.
+function siteMkdir(site, path, done) {
+	if (site.kind === "ftp") {
+		runCurl(site, ["--max-time", "20", "-Q", "MKD " + path, site.base], function(code, err) {
+			if (code === 0) {
+				done("", false);
+			} else {
+				done(netWhyText(code, err), /exist|521|550/i.test(String(err || "")));
+			}
+		});
+		return;
+	}
+	site.conn.request(["mkdir", path], null, function(err) {
+		done(err ? netToolWhy(err) : "", !!err && err.kind === "exists");
+	});
+}
+
+function siteRename(site, from, to, done) {
+	if (site.kind === "ftp") {
+		runCurl(site, ["--max-time", "20", "-Q", "RNFR " + from, "-Q", "RNTO " + to, site.base], function(code, err) {
+			done(code === 0 ? "" : netWhyText(code, err));
+		});
+		return;
+	}
+	site.conn.request(["mv", from, to], null, function(err) {
+		done(err ? netToolWhy(err) : "");
+	});
+}
+
+// Take away a file, or a folder that is already empty.
+function siteRemove(site, path, isDir, done) {
+	if (site.kind === "ftp") {
+		runCurl(site, ["--max-time", "20", "-Q", (isDir ? "RMD " : "DELE ") + path, site.base], function(code, err) {
+			done(code === 0 ? "" : netWhyText(code, err));
+		});
+		return;
+	}
+	site.conn.request([isDir ? "rmdir" : "rm", path], null, function(err) {
+		done(err ? netToolWhy(err) : "");
+	});
+}
+
+// A copy of a site with a connection of its own, for a job.
+function jobSite(site) {
+	if (site.kind === "ftp") {
+		return site;
+	}
+	var copy = {};
+	for (var k in site) {
+		if (site.hasOwnProperty(k)) {
+			copy[k] = site[k];
+		}
+	}
+	copy.conn = new ToolConn(copy);
+	return copy;
+}
+
+// A name not used in a folder listing, like freeName but for the site.
+function freeNetName(taken, name, isDir) {
+	if (!taken[String(name).toLowerCase()]) {
+		return name;
+	}
+	var dot = isDir ? -1 : name.lastIndexOf(".");
+	var stem = dot > 0 ? name.substring(0, dot) : name;
+	var ext = dot > 0 ? name.substring(dot) : "";
+	for (var n = 2; n < 1000; n++) {
+		var tryName = stem + " (" + n + ")" + ext;
+		if (!taken[tryName.toLowerCase()]) {
+			return tryName;
+		}
+	}
+	return stem + " (" + new Date().getTime() + ")" + ext;
+}
+
+// {url, trust} -> {id, home}: open a site, trying the sign-in at once so a
+// wrong name or password is told here. The url may carry them:
+// "sftp://user:pass@host/". In the answer:
+//   login: true      the app should ask for the name and password;
+//   hostkey: "SHA256:..." (SFTP) the server's key is not known, or changed:
+//                    true when another was known; to go on, the app asks
+//                    again with trust: that fingerprint.
+//   home             the folder the server starts a session in (SFTP).
 var netOpenAssistant = function() {};
 netOpenAssistant.prototype.run = function(future) {
-	var site = parseNet((this.controller.args || {}).url);
+	var args = this.controller.args || {};
+	var site = parseNet(args.url);
 	if (!site) {
-		return fail(future, "That is not an ftp:// or ftps:// address.");
+		return fail(future, "That is not an ftp://, sftp:// or smb:// address.");
 	}
-	var port = site.port || 21;
-	// ftps on 990 speaks TLS from the start; anywhere else it is asked for
-	// after signing in, which is what servers mostly do.
-	var implicit = site.scheme === "ftps" && (site.port || 0) === 990;
-	var s = {
-		base: (implicit ? "ftps://" : "ftp://") + site.host + ":" + port + "/",
-		user: site.user,
-		pass: site.pass,
-		extra: site.scheme === "ftps" && !implicit ? ["--ssl-reqd"] : []
-	};
-	runCurl(s, ["--max-time", String(NET_LIST_TIME), s.base], function(code, err) {
-		if (code === 0) {
-			nets[++netCount] = s;
-			log("site opened: " + s.base);
-			future.result = {returnValue: true, ok: true, id: netCount};
+	if (site.scheme === "ftp" || site.scheme === "ftps") {
+		var port = site.port || 21;
+		// ftps on 990 speaks TLS from the start; anywhere else it is asked for
+		// after signing in, which is what servers mostly do.
+		var implicit = site.scheme === "ftps" && (site.port || 0) === 990;
+		var s = {
+			kind: "ftp",
+			base: (implicit ? "ftps://" : "ftp://") + site.host + ":" + port + "/",
+			user: site.user,
+			pass: site.pass,
+			extra: site.scheme === "ftps" && !implicit ? ["--ssl-reqd"] : []
+		};
+		runCurl(s, ["--max-time", String(NET_LIST_TIME), s.base], function(code, err) {
+			if (code === 0) {
+				nets[++netCount] = s;
+				log("site opened: " + s.base);
+				future.result = {returnValue: true, ok: true, id: netCount, home: "/"};
+				return;
+			}
+			if (/530|login or password|authentication|password required/i.test(err) || code === 67) {
+				future.result = {returnValue: true, ok: false, login: true, error: "The server refused the name or password."};
+				return;
+			}
+			fail(future, netWhyText(code, err));
+		});
+		return future;
+	}
+
+	// SFTP and SMB
+	var where = site.host + ":" + (site.port || (site.scheme === "sftp" ? 22 : 445));
+	var known = readConf("known_hosts.json");
+	var t = {kind: site.scheme, host: site.host, port: site.port, user: site.user, pass: site.pass,
+		domain: site.domain, keys: []};
+	if (site.scheme === "sftp") {
+		t.trust = String(args.trust || known[where] || "");
+		for (var k = 0; k < SSH_KEYS.length; k++) {
+			if (exists(ROOT + "/.ssh/" + SSH_KEYS[k])) {
+				t.keys.push(ROOT + "/.ssh/" + SSH_KEYS[k]);
+			}
+		}
+		if (!t.user) {
+			// SFTP always signs in as someone.
+			future.result = {returnValue: true, ok: false, login: true, error: "Type the name to sign in with."};
+			return future;
+		}
+	}
+	t.conn = new ToolConn(t);
+	t.conn.request(["home"], null, function(err, lines) {
+		if (err) {
+			t.conn.kill();
+			if (err.kind === "hostkey") {
+				future.result = {returnValue: true, ok: false, hostkey: t.conn.hostkey,
+					changed: !!known[where] && known[where] !== t.conn.hostkey,
+					error: "The server's identity could not be confirmed."};
+			} else if (err.kind === "auth") {
+				future.result = {returnValue: true, ok: false, login: true, error: netToolWhy(err)};
+			} else {
+				fail(future, netToolWhy(err));
+			}
 			return;
 		}
-		if (/530|login or password|authentication|password required/i.test(err) || code === 67) {
-			future.result = {returnValue: true, ok: false, login: true, error: "The server refused the name or password."};
-			return;
+		if (site.scheme === "sftp" && known[where] !== t.trust) {
+			known[where] = t.trust;
+			writeConf("known_hosts.json", known);
 		}
-		fail(future, netWhyText(code, err));
+		var home = "/";
+		for (var i = 0; i < lines.length; i++) {
+			if (lines[i][0] === "path" && lines[i][1]) {
+				home = lines[i][1];
+			}
+		}
+		nets[++netCount] = t;
+		log("site opened: " + site.scheme + "://" + where);
+		future.result = {returnValue: true, ok: true, id: netCount, home: home};
 	});
 	return future;
 };
@@ -1361,7 +1832,11 @@ netOpenAssistant.prototype.run = function(future) {
 // {id}: the site is no longer needed.
 var netCloseAssistant = function() {};
 netCloseAssistant.prototype.run = function(future) {
-	delete nets[(this.controller.args || {}).id];
+	var id = (this.controller.args || {}).id;
+	if (nets[id] && nets[id].conn) {
+		nets[id].conn.quit();
+	}
+	delete nets[id];
 	future.result = {returnValue: true, ok: true};
 	return future;
 };
@@ -1371,23 +1846,25 @@ var netListAssistant = function() {};
 netListAssistant.prototype.run = function(future) {
 	var args = this.controller.args || {};
 	var site = nets[args.id];
-	var path = cleanNetPath(args.path);
+	var path = cleanNetPath(isNetPath(args.path) ? netPathOf(args.path) : args.path);
 	if (!site || !path) {
 		return fail(future, "That site is no longer connected. Type its address again.");
 	}
-	netListOnce(site, path, function(err, entries) {
+	siteList(site, path, function(err, entries) {
 		if (err) {
 			return fail(future, err);
 		}
 		future.result = {returnValue: true, ok: true, entries: entries};
 	});
 	return future;
-};// {id, path, name} -> {path}: a new name on the site.
+};
+
+// {id, path, name} -> {path}: a new name on the site.
 var netRenameAssistant = function() {};
 netRenameAssistant.prototype.run = function(future) {
 	var args = this.controller.args || {};
 	var site = nets[args.id];
-	var path = cleanNetPath(args.path);
+	var path = cleanNetPath(isNetPath(args.path) ? netPathOf(args.path) : args.path);
 	var name = String(args.name || "").replace(/^\s+|\s+$/g, "");
 	if (!site || !path || path === "/") {
 		return fail(future, "That cannot be renamed.");
@@ -1396,14 +1873,13 @@ netRenameAssistant.prototype.run = function(future) {
 	if (bad) {
 		return fail(future, bad);
 	}
-	var to = parentOf(path) === "/" ? "/" + name : parentOf(path) + "/" + name;
-	runCurl(site, ["--max-time", "20", "-Q", "RNFR " + path, "-Q", "RNTO " + to, site.base],
-		function(code, err) {
-			if (code !== 0) {
-				return fail(future, netWhyText(code, err));
-			}
-			future.result = {returnValue: true, ok: true, path: to};
-		});
+	var to = netJoin(parentOf(path), name);
+	siteRename(site, path, to, function(err) {
+		if (err) {
+			return fail(future, err);
+		}
+		future.result = {returnValue: true, ok: true, path: to};
+	});
 	return future;
 };
 
@@ -1412,7 +1888,7 @@ var netMkdirAssistant = function() {};
 netMkdirAssistant.prototype.run = function(future) {
 	var args = this.controller.args || {};
 	var site = nets[args.id];
-	var path = cleanNetPath(args.path);
+	var path = cleanNetPath(isNetPath(args.path) ? netPathOf(args.path) : args.path);
 	var name = String(args.name || "").replace(/^\s+|\s+$/g, "");
 	if (!site || !path) {
 		return fail(future, "Folders cannot be made here.");
@@ -1421,13 +1897,10 @@ netMkdirAssistant.prototype.run = function(future) {
 	if (bad) {
 		return fail(future, bad);
 	}
-	var made = path === "/" ? "/" + name : path + "/" + name;
-	runCurl(site, ["--max-time", "20", "-Q", "MKD " + made, site.base], function(code, err) {
-		if (code !== 0) {
-			if (/exist|521|550/i.test(String(err || ""))) {
-				return fail(future, "There is already something named \"" + name + "\" here.");
-			}
-			return fail(future, netWhyText(code, err));
+	var made = netJoin(path, name);
+	siteMkdir(site, made, function(err, already) {
+		if (err) {
+			return fail(future, already ? "There is already something named \"" + name + "\" here." : err);
 		}
 		future.result = {returnValue: true, ok: true, path: made};
 	});
@@ -1445,13 +1918,18 @@ function netDownSteps(steps, site, remote, local, isDir, size) {
 			job.bytes += size || 0;
 			var target = exists(local) ?
 				join(parentOf(local), freeName(parentOf(local), nameOf(local), false)) : local;
-			runCurl(site, ["-o", target, netUrl(site, remote)], function(code, err) {
+			var before = job.doneBytes;
+			siteGet(site, remote, target, function(n) {
+				job.doneBytes = before + n;
+			}, function(err) {
 				job.doneThings++;
 				var st = stat(target);
-				job.doneBytes += st ? st.size : 0;
-				if (code !== 0 && !job.cancelled) {
+				job.doneBytes = before + (st ? st.size : 0);
+				if (err && !job.cancelled) {
 					try { fs.unlinkSync(target); } catch (e1) {}
-					jobError(remote, netWhyText(code, err));
+					jobError(remote, err);
+				} else if (err) {
+					try { fs.unlinkSync(target); } catch (e3) {}
 				}
 				next();
 			});
@@ -1469,7 +1947,7 @@ function netDownSteps(steps, site, remote, local, isDir, size) {
 			}
 		}
 		job.doneThings++;
-		netListOnce(site, remote, function(err, entries) {
+		siteList(site, remote, function(err, entries) {
 			if (err) {
 				jobError(remote, err);
 				next();
@@ -1478,8 +1956,7 @@ function netDownSteps(steps, site, remote, local, isDir, size) {
 			var inner = [];
 			for (var i = 0; i < entries.length; i++) {
 				var e = entries[i];
-				netDownSteps(inner, site, remote === "/" ? "/" + e.n : remote + "/" + e.n,
-					join(dir, e.n), !!e.d, e.s);
+				netDownSteps(inner, site, netJoin(remote, e.n), join(dir, e.n), !!e.d, e.s);
 			}
 			Array.prototype.unshift.apply(job.steps, inner);
 			next();
@@ -1494,11 +1971,14 @@ function netUpSteps(steps, site, from, remote, st) {
 	steps.push(function(next) {
 		job.current = nameOf(from);
 		if (!st.isDirectory()) {
-			runCurl(site, ["-T", from, netUrl(site, remote)], function(code, err) {
+			var before = job.doneBytes;
+			sitePut(site, from, remote, function(n) {
+				job.doneBytes = before + n;
+			}, function(err) {
 				job.doneThings++;
-				job.doneBytes += st.isFile() ? st.size : 0;
-				if (code !== 0 && !job.cancelled) {
-					jobError(from, netWhyText(code, err));
+				job.doneBytes = before + (st.isFile() ? st.size : 0);
+				if (err && !job.cancelled) {
+					jobError(from, err);
 				}
 				next();
 			});
@@ -1507,8 +1987,8 @@ function netUpSteps(steps, site, from, remote, st) {
 		job.doneThings++;
 		// The folder is made if it is not there (a failure to make it because
 		// it is already there is fine: it is merged, like a local copy).
-		runCurl(site, ["--max-time", "20", "-Q", "MKD " + remote, site.base], function() {
-			netListOnce(site, remote, function(err, entries) {
+		siteMkdir(site, remote, function() {
+			siteList(site, remote, function(err, entries) {
 				var taken = {};
 				if (!err) {
 					for (var i = 0; i < entries.length; i++) {
@@ -1527,8 +2007,7 @@ function netUpSteps(steps, site, from, remote, st) {
 					if (s2) {
 						var toName = freeNetName(taken, names[k], s2.isDirectory());
 						taken[toName.toLowerCase()] = true;
-						netUpSteps(inner, site, join(from, names[k]),
-							remote === "/" ? "/" + toName : remote + "/" + toName, s2);
+						netUpSteps(inner, site, join(from, names[k]), netJoin(remote, toName), s2);
 					}
 				}
 				Array.prototype.unshift.apply(job.steps, inner);
@@ -1543,16 +2022,16 @@ function netDeleteSteps(steps, site, remote, isDir) {
 	steps.push(function(next) {
 		job.current = nameOf(remote);
 		if (!isDir) {
-			runCurl(site, ["--max-time", "20", "-Q", "DELE " + remote, site.base], function(code, err) {
+			siteRemove(site, remote, false, function(err) {
 				job.doneThings++;
-				if (code !== 0 && !job.cancelled) {
-					jobError(remote, netWhyText(code, err));
+				if (err && !job.cancelled) {
+					jobError(remote, err);
 				}
 				next();
 			});
 			return;
 		}
-		netListOnce(site, remote, function(err, entries) {
+		siteList(site, remote, function(err, entries) {
 			if (err) {
 				jobError(remote, err);
 				next();
@@ -1561,14 +2040,14 @@ function netDeleteSteps(steps, site, remote, isDir) {
 			var inner = [];
 			for (var i = 0; i < entries.length; i++) {
 				var e = entries[i];
-				netDeleteSteps(inner, site, remote === "/" ? "/" + e.n : remote + "/" + e.n, !!e.d);
+				netDeleteSteps(inner, site, netJoin(remote, e.n), !!e.d);
 			}
 			// The folder itself goes once it is empty.
 			inner.push(function(next2) {
-				runCurl(site, ["--max-time", "20", "-Q", "RMD " + remote, site.base], function(code2, err2) {
+				siteRemove(site, remote, true, function(err2) {
 					job.doneThings++;
-					if (code2 !== 0 && !job.cancelled) {
-						jobError(remote, netWhyText(code2, err2));
+					if (err2 && !job.cancelled) {
+						jobError(remote, err2);
 					}
 					next2();
 				});
@@ -1583,15 +2062,16 @@ function netDeleteSteps(steps, site, remote, isDir) {
 // one side on the site. Copy brings things down when the paths are on the
 // site, and takes them up when the destination is; move does that and then
 // takes the source away, but only if every part arrived.
-function startNet(future, args, op) {
-	var site = nets[args.net];
-	if (!site) {
+function startNet(future, args, op, then) {
+	var shared = nets[args.net];
+	if (!shared) {
 		return fail(future, "That site is no longer connected. Type its address again.");
 	}
 	var paths = args.paths || [];
 	var i;
 	var items = [];
 	var down = paths.length > 0 && isNetPath(paths[0]);
+	var upath = "";
 
 	if (down) {
 		var dest = null;
@@ -1604,9 +2084,9 @@ function startNet(future, args, op) {
 		}
 		for (i = 0; i < paths.length; i++) {
 			if (!isNetPath(paths[i])) {
-				return fail(future, "Things from the site and from this TouchPad cannot go in one job.");
+				return fail(future, "Things from the site and from this " + DEVICE + " cannot go in one job.");
 			}
-			var rp = cleanNetPath(paths[i].substring(paths[i].indexOf("/", paths[i].indexOf("://") + 3)));
+			var rp = cleanNetPath(netPathOf(paths[i]));
 			if (!rp || rp === "/") {
 				return fail(future, "That cannot be copied from the site.");
 			}
@@ -1620,10 +2100,7 @@ function startNet(future, args, op) {
 			return fail(future, "That cannot be done on the site.");
 		}
 		var updest = String(args.dest || "");
-		if (!isNetPath(updest)) {
-			return fail(future, "That folder is not on the site being shown.");
-		}
-		var upath = cleanNetPath(updest.substring(updest.indexOf("/", updest.indexOf("://") + 3)));
+		upath = isNetPath(updest) ? cleanNetPath(netPathOf(updest)) : null;
 		if (!upath) {
 			return fail(future, "That folder is not on the site being shown.");
 		}
@@ -1639,11 +2116,21 @@ function startNet(future, args, op) {
 		}
 	}
 
+	var site = jobSite(shared);
 	job = {
 		id: ++jobCount, op: op, finished: false, cancelled: false, stage: "counting",
 		bytes: 0, doneBytes: 0, things: 0, doneThings: 0, items: items.length, doneItems: 0, current: "",
-		failed: 0, firstError: "", sizes: {}
+		failed: 0, firstError: "", sizes: {}, started: new Date().getTime()
 	};
+	if (site.conn) {
+		// Cancel ends the transfer under way; the job's connection goes with the job.
+		job.kill = function() {
+			site.conn.kill();
+		};
+		job.close = function() {
+			site.conn.quit();
+		};
+	}
 	stayAwake();
 	var steps = [];
 	job.steps = steps;
@@ -1673,7 +2160,7 @@ function startNet(future, args, op) {
 				}
 				var group = parents[at++];
 				job.current = nameOf(group.path);
-				netListOnce(site, group.path, function(err, entries) {
+				siteList(site, group.path, function(err, entries) {
 					if (err) {
 						jobError(group.path, err);
 						for (var q = 0; q < group.items.length; q++) {
@@ -1728,7 +2215,7 @@ function startNet(future, args, op) {
 		// What is already in the folder on the site, so what goes up gets a
 		// name of its own when something is in the way ("Keep Both").
 		steps.push(function(next) {
-			netListOnce(site, upath, function(err, entries) {
+			siteList(site, upath, function(err, entries) {
 				job.stage = "working";
 				if (!err) {
 					var taken = {};
@@ -1746,8 +2233,13 @@ function startNet(future, args, op) {
 		});
 		for (i = 0; i < items.length; i++) {
 			(function(it) {
-				var to = it.toName || nameOf(it.local);
-				netUpSteps(steps, site, it.local, it.to === "/" ? "/" + to : it.to + "/" + to, it.st);
+				// The name is settled by the step above, so it is read when this runs.
+				steps.push(function(next) {
+					netUpSteps(job.steps, site, it.local, netJoin(it.to, it.toName || nameOf(it.local)), it.st);
+					// netUpSteps added its step at the end; bring it to the front.
+					job.steps.unshift(job.steps.pop());
+					next();
+				});
 				steps.push(function(next) {
 					job.doneItems++;
 					next();
@@ -1768,11 +2260,738 @@ function startNet(future, args, op) {
 	}
 
 	setTimeout(function() {
+		runSteps(steps, then ? phaseEnd(then) : finish);
+	}, 10);
+	future.result = {returnValue: true, ok: true, id: job.id};
+	return future;
+}
+
+// ---- work through the TouchPad: between sites, archives on a site, opening ----
+//
+// Some things cannot be done on a server itself: copying from one server to
+// another, making or unpacking an archive there, and opening a file that is
+// there. They are done in stages through a folder on the storage: things come
+// down, are worked on, go up, and the folder is emptied again. Each stage is
+// an ordinary job (startNet, startArchive) whose end hands on to the next
+// stage instead of finishing, so the app follows one job from start to end.
+
+var WORK_DIR = ROOT + "/.topaz-explorer";
+var STAGE_DIR = WORK_DIR + "/staging";
+var CACHE_DIR = WORK_DIR + "/cache";
+var KEEP_MS = 2 * 86400000;   // how long a file opened from a site is kept
+var SEARCH_FOLDERS = 2000;    // folders looked through on a site at most
+var SEARCH_MS = 60000;        // and for how long
+
+// Make a folder and those above it. True when it is there.
+function mkdirs(path) {
+	var parts = path.split("/");
+	var at = "";
+	for (var i = 0; i < parts.length; i++) {
+		if (!parts[i]) {
+			continue;
+		}
+		at += "/" + parts[i];
+		try {
+			fs.mkdirSync(at, 493 /* 0755 */);
+		} catch (e) {}
+	}
+	var st = stat(path);
+	return !!st && st.isDirectory();
+}
+
+// Take away what is in a folder and older than ms, the folder kept.
+function dropOld(dir, ms) {
+	var names = [];
+	try {
+		names = fs.readdirSync(dir);
+	} catch (e) {
+		return;
+	}
+	var now = new Date().getTime();
+	for (var i = 0; i < names.length; i++) {
+		var p = join(dir, names[i]);
+		var st = stat(p);
+		if (st && now - st.mtime.getTime() > ms) {
+			removeAll(p, st, false);
+		} else if (st && st.isDirectory()) {
+			dropOld(p, ms);
+		}
+	}
+}
+
+// A new empty folder to work in, or null. What an earlier run left behind
+// (the app or service stopped part way) goes.
+function newStage() {
+	dropOld(STAGE_DIR, 3600000);
+	var dir = STAGE_DIR + "/" + new Date().getTime();
+	return mkdirs(dir) ? dir : null;
+}
+
+function dropStage(dir) {
+	var st = stat(dir);
+	if (st) {
+		removeAll(dir, st, false);
+	}
+}
+
+// The things in a folder, as full paths.
+function contentsOf(dir) {
+	var out = [];
+	try {
+		var names = fs.readdirSync(dir);
+		for (var i = 0; i < names.length; i++) {
+			out.push(join(dir, names[i]));
+		}
+	} catch (e) {}
+	return out;
+}
+
+// What runs when a stage's steps are done: tidy the stage, then go on.
+function phaseEnd(then) {
+	return function() {
+		if (job.sizeWatch) {
+			clearInterval(job.sizeWatch);
+			job.sizeWatch = null;
+		}
+		if (job.close) {
+			job.close();
+			job.close = null;
+		}
+		then();
+	};
+}
+
+// Run stages one after another. A stage is function(future, then, chain): it
+// starts a job that calls then() at its end, or fails into future, or calls
+// then() at once when it has nothing to do. Things that could not be done are
+// added up over the stages; a cancel, a failed archive or a wanted password
+// stops the rest. tidy() runs at the end in any case. The first stage's start
+// answers the app.
+function runStages(future, stages, tidy) {
+	var at = 0;
+	var chain = {failed: 0, firstError: ""};
+	var counted = null;
+	var over = false;
+	function end() {
+		if (over) {
+			return;
+		}
+		over = true;
+		try {
+			tidy();
+		} catch (e) {
+			log("tidy: " + e);
+		}
+		job.failed = chain.failed;
+		job.firstError = chain.firstError;
+		finish();
+	}
+	function next() {
+		if (at > 0 && job && job !== counted) {
+			counted = job;
+			chain.failed += job.failed;
+			chain.firstError = chain.firstError || job.firstError;
+		}
+		if (at > 0 && (job.cancelled || job.note || job.password)) {
+			end();
+			return;
+		}
+		if (at >= stages.length) {
+			end();
+			return;
+		}
+		var f = {};
+		stages[at++](f, next, chain);
+		if (f.result && f.result.ok === false) {
+			if (at === 1) {
+				// Nothing began: the app is told so, as for any job.
+				over = true;
+				try { tidy(); } catch (e2) {}
+				future.result = f.result;
+				return;
+			}
+			job.note = f.result.error;
+			end();
+		}
+	}
+	next();
+	if (!future.result) {
+		future.result = {returnValue: true, ok: true, id: job.id};
+	}
+	return future;
+}
+
+// {op: copy|move, net: from, toNet: to, paths, dest}: from one site to
+// another, or to another folder of the same one. A move within one site is a
+// rename; anything else comes down and goes up again, and a move takes the
+// originals away only when every part arrived.
+function startRelay(future, args, op) {
+	var from = nets[args.net];
+	var to = nets[args.toNet];
+	var dest = String(args.dest || "");
+	if (!from || !to) {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	var destPath = isNetPath(dest) ? cleanNetPath(netPathOf(dest)) : null;
+	if (!destPath) {
+		return fail(future, "That folder is not on a site.");
+	}
+	var paths = args.paths || [];
+	for (var i = 0; i < paths.length; i++) {
+		var rp = isNetPath(paths[i]) ? cleanNetPath(netPathOf(paths[i])) : null;
+		if (!rp || rp === "/") {
+			return fail(future, "That cannot be copied from the site.");
+		}
+		if (args.net === args.toNet) {
+			if (destPath === rp || destPath.indexOf(rp + "/") === 0) {
+				return fail(future, "\"" + nameOf(rp) + "\" cannot be put inside itself.");
+			}
+			if (op === "move" && parentOf(rp) === destPath) {
+				return fail(future, "Those are already in this folder.");
+			}
+		}
+	}
+	if (args.net === args.toNet && op === "move") {
+		return moveOnSite(future, from, paths, destPath);
+	}
+	var stage = newStage();
+	if (!stage) {
+		return fail(future, "No room to work in on the " + DEVICE + "'s storage.");
+	}
+	var stages = [
+		function(f, then) {
+			startNet(f, {net: args.net, paths: paths, dest: stage}, "copy", then);
+		},
+		function(f, then) {
+			var got = contentsOf(stage);
+			if (!got.length) {
+				then();
+				return;
+			}
+			startNet(f, {net: args.toNet, paths: got, dest: dest}, "copy", then);
+		}
+	];
+	if (op === "move") {
+		stages.push(function(f, then, chain) {
+			if (chain.failed) {
+				then();
+				return;
+			}
+			startNet(f, {net: args.net, paths: paths}, "delete", then);
+		});
+	}
+	log(op + " between sites: " + paths.length + " item(s)");
+	return runStages(future, stages, function() {
+		dropStage(stage);
+	});
+}
+
+// A move from one folder of a site to another: each thing is renamed into
+// place, with a name of its own if one is taken there.
+function moveOnSite(future, site, paths, destPath) {
+	job = {
+		id: ++jobCount, op: "move", finished: false, cancelled: false, stage: "working",
+		bytes: 0, doneBytes: 0, things: paths.length, doneThings: 0, items: paths.length, doneItems: 0,
+		current: "", failed: 0, firstError: "", sizes: {}, started: new Date().getTime()
+	};
+	stayAwake();
+	var steps = [];
+	job.steps = steps;
+	var taken = {};
+	steps.push(function(next) {
+		siteList(site, destPath, function(err, entries) {
+			for (var i = 0; !err && i < entries.length; i++) {
+				taken[entries[i].n.toLowerCase()] = true;
+			}
+			next();
+		});
+	});
+	for (var i = 0; i < paths.length; i++) {
+		(function(rp) {
+			steps.push(function(next) {
+				job.current = nameOf(rp);
+				var name = freeNetName(taken, nameOf(rp), false);
+				taken[name.toLowerCase()] = true;
+				siteRename(site, rp, netJoin(destPath, name), function(err) {
+					job.doneThings++;
+					job.doneItems++;
+					if (err && !job.cancelled) {
+						jobError(rp, err);
+					}
+					next();
+				});
+			});
+		})(cleanNetPath(netPathOf(paths[i])));
+	}
+	setTimeout(function() {
 		runSteps(steps, finish);
 	}, 10);
 	future.result = {returnValue: true, ok: true, id: job.id};
 	return future;
 }
+
+// {op: pack, net, paths, dest, name} and {op: extract, net, paths: [archive],
+// dest, folder, password}: archives made or unpacked on a site, by way of
+// the TouchPad. What is made goes up beside what it came from; a name in use
+// there gets a number.
+function startNetArchive(future, args, op) {
+	var site = nets[args.net];
+	if (!site) {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	var dest = String(args.dest || "");
+	if (!isNetPath(dest)) {
+		return fail(future, "That folder is not on the site being shown.");
+	}
+	var name = String(args.name || "").replace(/^\s+|\s+$/g, "");
+	if (op === "pack") {
+		if (!/\.(zip|7z|tar)$/i.test(name)) {
+			name += ".zip";
+		}
+		var bad = badName(name, "");
+		if (bad) {
+			return fail(future, bad);
+		}
+	}
+	var stage = newStage();
+	if (!stage || !mkdirs(stage + "/in") || !mkdirs(stage + "/out")) {
+		return fail(future, "No room to work in on the " + DEVICE + "'s storage.");
+	}
+	var down = stage + "/in";
+	var out = stage + "/out";
+	var stages = [
+		function(f, then) {
+			startNet(f, {net: args.net, paths: args.paths || [], dest: down}, "copy", then);
+		},
+		function(f, then) {
+			var got = contentsOf(down);
+			if (!got.length) {
+				then();
+				return;
+			}
+			if (op === "pack") {
+				startArchive(f, {paths: got, dest: out, name: name}, "pack", then);
+			} else {
+				startArchive(f, {paths: got, dest: out, folder: args.folder, password: args.password}, "extract", then);
+			}
+		},
+		function(f, then) {
+			var made = contentsOf(out);
+			if (!made.length) {
+				then();
+				return;
+			}
+			startNet(f, {net: args.net, paths: made, dest: dest}, "copy", then);
+		}
+	];
+	log(op + " on a site: " + (args.paths || []).length + " item(s)");
+	return runStages(future, stages, function() {
+		dropStage(stage);
+	});
+}
+
+// Where a file from a site is kept to be opened: the site and its path,
+// with what the storage cannot have in a name made plain.
+function cachePath(site, remote) {
+	var host = String(site.base || (site.kind + "-" + site.host + (site.port ? "-" + site.port : "")))
+		.replace(/^[a-z]+:\/\//i, "").replace(/[\\\/:*?"<>|]+/g, "_");
+	var parts = String(remote).split("/");
+	var out = CACHE_DIR + "/" + host;
+	for (var i = 0; i < parts.length; i++) {
+		if (parts[i]) {
+			out += "/" + parts[i].replace(/[\\:*?"<>|]/g, "_");
+		}
+	}
+	return out;
+}
+
+// A copy kept from before can be used when it is recent and the same size.
+function cachedCopy(local, size) {
+	var st = stat(local);
+	return !!st && st.isFile() && (size === undefined || size === null || st.size === Number(size)) &&
+		new Date().getTime() - st.mtime.getTime() < KEEP_MS;
+}
+
+// {op: fetch, net, paths: [file], size} -> when done, result: where the copy
+// is on the storage, to be opened from there.
+function startFetch(future, args) {
+	var site = nets[args.net];
+	var url = (args.paths || [])[0];
+	var remote = isNetPath(url) ? cleanNetPath(netPathOf(url)) : null;
+	if (!site || !remote || remote === "/") {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	dropOld(CACHE_DIR, KEEP_MS);
+	var local = cachePath(site, remote);
+	var here = parentOf(local);
+	if (!mkdirs(here)) {
+		return fail(future, "No room to keep it on the " + DEVICE + "'s storage.");
+	}
+	var stages = [];
+	if (cachedCopy(local, args.size)) {
+		// Already here: a job that does nothing, so the app goes the same way.
+		stages.push(function(f, then) {
+			job = {
+				id: ++jobCount, op: "copy", finished: false, cancelled: false, stage: "working",
+				bytes: 0, doneBytes: 0, things: 1, doneThings: 1, items: 1, doneItems: 1, current: "",
+				failed: 0, firstError: "", sizes: {}
+			};
+			setTimeout(then, 10);
+		});
+	} else {
+		try { fs.unlinkSync(local); } catch (e) {}
+		stages.push(function(f, then) {
+			// The name it comes down as is the site's own (see netDownSteps).
+			local = join(here, nameOf(remote));
+			startNet(f, {net: args.net, paths: [url], dest: here}, "copy", then);
+		});
+	}
+	return runStages(future, stages, function() {
+		if (exists(local) && !job.cancelled) {
+			job.result = local;
+		}
+	});
+}
+
+// {id, path, size} -> {path}: a file from the site, brought down to be
+// shown (pictures, one after another), without the job's progress dialog.
+var netGetAssistant = function() {};
+netGetAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var site = nets[args.id];
+	var remote = cleanNetPath(isNetPath(args.path) ? netPathOf(args.path) : args.path);
+	if (!site || !remote || remote === "/") {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	var local = cachePath(site, remote);
+	if (cachedCopy(local, args.size)) {
+		future.result = {returnValue: true, ok: true, path: local};
+		return future;
+	}
+	if (!mkdirs(parentOf(local))) {
+		return fail(future, "No room to keep it on the " + DEVICE + "'s storage.");
+	}
+	var part = local + ".part";
+	siteGet(site, remote, part, null, function(err) {
+		if (err) {
+			try { fs.unlinkSync(part); } catch (e) {}
+			return fail(future, err);
+		}
+		try {
+			try { fs.unlinkSync(local); } catch (e2) {}
+			fs.renameSync(part, local);
+		} catch (e3) {
+			return fail(future, "It could not be kept on the " + DEVICE + whyNot(e3));
+		}
+		future.result = {returnValue: true, ok: true, path: local};
+	});
+	return future;
+};
+
+// {id, local, path}: a file on the storage goes up to the site in place of
+// the one there (the text editor saving a file it opened from a site).
+var netPutAssistant = function() {};
+netPutAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var site = nets[args.id];
+	var remote = cleanNetPath(isNetPath(args.path) ? netPathOf(args.path) : args.path);
+	var local = clean(args.local);
+	if (!site || !remote || remote === "/") {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	if (!local || !stat(local)) {
+		return fail(future, "The file to send could not be found.");
+	}
+	sitePut(site, local, remote, null, function(err) {
+		if (err) {
+			return fail(future, err);
+		}
+		future.result = {returnValue: true, ok: true};
+	});
+	return future;
+};
+
+// {id, path, text, hidden} -> {entries: [{p: folder on the site, n, d, s, m}],
+// more: true when cut short}: everything under a folder of the site whose
+// name contains the text. A folder at a time, within limits, as each one is
+// a request to the server.
+var netSearchAssistant = function() {};
+netSearchAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var site = nets[args.id];
+	var top = cleanNetPath(isNetPath(args.path) ? netPathOf(args.path) : args.path);
+	var text = String(args.text || "").toLowerCase();
+	if (!site || !top) {
+		return fail(future, "That site is no longer connected. Type its address again.");
+	}
+	if (!text) {
+		return fail(future, "Type something to search for.");
+	}
+	var found = [];
+	var queue = [top];
+	var looked = 0;
+	var began = new Date().getTime();
+	(function next() {
+		if (!queue.length || found.length >= MAX_FOUND || looked >= SEARCH_FOLDERS ||
+				new Date().getTime() - began > SEARCH_MS) {
+			future.result = {returnValue: true, ok: true, entries: found,
+				more: queue.length > 0 || found.length >= MAX_FOUND};
+			return;
+		}
+		var dir = queue.shift();
+		looked++;
+		siteList(site, dir, function(err, entries) {
+			for (var i = 0; !err && i < entries.length && found.length < MAX_FOUND; i++) {
+				var e = entries[i];
+				if (!args.hidden && e.n.charAt(0) === ".") {
+					continue;
+				}
+				if (e.n.toLowerCase().indexOf(text) >= 0) {
+					found.push({p: dir, n: e.n, d: e.d, s: e.s, m: e.m});
+				}
+				if (e.d) {
+					queue.push(netJoin(dir, e.n));
+				}
+			}
+			next();
+		});
+	})();
+	return future;
+};
+
+// ---- sharing this TouchPad over FTP ----------------------------------------------
+//
+// ftpd.js serves the storage. It runs as a process of its own, started through
+// the shell so it is nobody's child, and outlives the app and this service; it
+// leaves its number in a file so it can be found and stopped. The system's
+// firewall lets nothing in, so while sharing, the control port and the passive
+// data ports are let through, and shut again when sharing stops.
+
+var FTPD = "/media/cryptofs/apps/usr/palm/services/com.palm.stark.files.service/ftpd.js";
+var FTPD_PID = "/tmp/topaz-ftpd.pid";
+var FTPD_STATUS = "/tmp/topaz-ftpd.json";
+var FTPD_LOG = "/tmp/topaz-ftpd.log";
+var PASV_FROM = 50100;
+var PASV_TO = 50119;
+
+// The sharing settings: {port, user, pass, readOnly}, with a password made up
+// the first time.
+function shareConf() {
+	var c = readConf("ftp-share.json");
+	var changed = false;
+	if (!c.port) {
+		c.port = 2121;
+		changed = true;
+	}
+	if (!c.user) {
+		c.user = DEVICE.toLowerCase().replace(/[^a-z0-9]/g, "") || "touchpad";
+		changed = true;
+	}
+	if (!c.pass) {
+		var letters = "abcdefghjkmnpqrstuvwxyz23456789";
+		c.pass = "";
+		for (var i = 0; i < 8; i++) {
+			c.pass += letters.charAt(Math.floor(Math.random() * letters.length));
+		}
+		changed = true;
+	}
+	c.readOnly = !!c.readOnly;
+	if (changed) {
+		writeConf("ftp-share.json", c);
+	}
+	return c;
+}
+
+// The server's process number while it runs, else 0.
+function ftpdPid() {
+	try {
+		var pid = parseInt(fs.readFileSync(FTPD_PID, "utf8"), 10);
+		if (pid > 0 && fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").indexOf("ftpd.js") >= 0) {
+			return pid;
+		}
+	} catch (e) {}
+	return 0;
+}
+
+// Let the ports through the firewall (open) or take that away again. Each
+// rule is removed first, so there is never more than one.
+function shareFirewall(port, open, done) {
+	var rules = [["--dport", String(port)], ["--dport", PASV_FROM + ":" + PASV_TO]];
+	var script = "";
+	for (var i = 0; i < rules.length; i++) {
+		var r = "INPUT -p tcp " + rules[i].join(" ") + " -j ACCEPT";
+		script += "while iptables -D " + r + " 2>/dev/null; do :; done\n";
+		if (open) {
+			script += "iptables -I " + r + "\n";
+		}
+	}
+	if (LUNEOS) {
+		done();
+		return;
+	}
+	var sh = child_process.spawn("/bin/sh", ["-c", script]);
+	sh.on("exit", function() {
+		done();
+	});
+}
+
+// This TouchPad's addresses on the network, from "ip addr" (or ifconfig).
+function myAddresses(done) {
+	var out = "";
+	var sh = child_process.spawn("/bin/sh", ["-c", "ip -4 addr 2>/dev/null || ifconfig 2>/dev/null"]);
+	sh.stdout.on("data", function(d) {
+		out += d.toString();
+	});
+	sh.on("exit", function() {
+		var found = [];
+		var re = /inet (?:addr:)?(\d+\.\d+\.\d+\.\d+)/g;
+		var m;
+		while ((m = re.exec(out)) !== null) {
+			if (m[1].indexOf("127.") !== 0 && found.indexOf(m[1]) < 0) {
+				found.push(m[1]);
+			}
+		}
+		done(found);
+	});
+}
+
+function shareStatus(future, extra) {
+	var c = shareConf();
+	var pid = ftpdPid();
+	var st = {};
+	try {
+		st = JSON.parse(fs.readFileSync(FTPD_STATUS, "utf8"));
+	} catch (e) {}
+	myAddresses(function(addrs) {
+		var r = {returnValue: true, ok: true, on: !!pid, port: c.port, user: c.user, pass: c.pass,
+			readOnly: c.readOnly, addresses: addrs, clients: pid ? (st.clients || 0) : 0};
+		for (var k in (extra || {})) {
+			if (extra.hasOwnProperty(k)) {
+				r[k] = extra[k];
+			}
+		}
+		future.result = r;
+	});
+	return future;
+}
+
+// {} -> {on, port, user, pass, readOnly, addresses, clients}
+var shareStatusAssistant = function() {};
+shareStatusAssistant.prototype.run = function(future) {
+	return shareStatus(future);
+};
+
+// {on, port, user, pass, readOnly} -> the same as shareStatus. Settings that
+// are given are kept for next time; a running server is restarted with them.
+var shareAssistant = function() {};
+shareAssistant.prototype.run = function(future) {
+	var args = this.controller.args || {};
+	var c = shareConf();
+	if (args.port !== undefined) {
+		var port = parseInt(args.port, 10);
+		if (!(port >= 1 && port <= 65535) || (port >= PASV_FROM && port <= PASV_TO)) {
+			return fail(future, "Pick a port from 1 to 65535, outside " + PASV_FROM + "-" + PASV_TO + ".");
+		}
+		c.port = port;
+	}
+	if (args.user !== undefined) {
+		var user = String(args.user).replace(/^\s+|\s+$/g, "");
+		if (!user || /\s/.test(user)) {
+			return fail(future, "The name cannot be empty or have spaces in it.");
+		}
+		c.user = user;
+	}
+	if (args.pass !== undefined) {
+		if (String(args.pass).length < 4) {
+			return fail(future, "Use a password of 4 letters or more.");
+		}
+		c.pass = String(args.pass);
+	}
+	if (args.readOnly !== undefined) {
+		c.readOnly = !!args.readOnly;
+	}
+	writeConf("ftp-share.json", c);
+
+	var pid = ftpdPid();
+	var oldPort = readConf("ftp-share-running.json").port || c.port;
+	function stopped(then) {
+		if (!pid) {
+			then();
+			return;
+		}
+		try {
+			process.kill(pid, "SIGTERM");
+		} catch (e) {}
+		// Wait for it to let go of its port.
+		var waited = 0;
+		(function check() {
+			if (ftpdPid() && waited < 3000) {
+				waited += 100;
+				setTimeout(check, 100);
+				return;
+			}
+			then();
+		})();
+	}
+	stopped(function() {
+		shareFirewall(oldPort, false, function() {
+			if (!args.on) {
+				log("sharing stopped");
+				shareStatus(future);
+				return;
+			}
+			// The server's settings, readable by root only.
+			var file = confDir() + "/ftpd-run.json";
+			try {
+				fs.writeFileSync(file, JSON.stringify({root: ROOT, port: c.port, user: c.user, pass: c.pass,
+					readOnly: c.readOnly, pasvFrom: PASV_FROM, pasvTo: PASV_TO,
+					pidFile: FTPD_PID, statusFile: FTPD_STATUS}));
+				fs.chmodSync(file, 384 /* 0600 */);
+			} catch (e) {
+				fail(future, "The sharing settings could not be written.");
+				return;
+			}
+			try { fs.unlinkSync(FTPD_STATUS); } catch (e2) {}
+			writeConf("ftp-share-running.json", {port: c.port});
+			shareFirewall(c.port, true, function() {
+				var q = function(s) {
+					return "'" + String(s).replace(/'/g, "'\\''") + "'";
+				};
+				child_process.spawn("/bin/sh", ["-c", q(process.execPath) + " " + q(FTPD) + " " + q(file) +
+					" >> " + FTPD_LOG + " 2>&1 </dev/null &"]);
+				// Give it a moment to start listening, or to fail.
+				var waited = 0;
+				(function check() {
+					var st = {};
+					try {
+						st = JSON.parse(fs.readFileSync(FTPD_STATUS, "utf8"));
+					} catch (e3) {}
+					if (st.error) {
+						shareFirewall(c.port, false, function() {
+							fail(future, st.error === "EADDRINUSE" ? "Port " + c.port + " is in use. Pick another." :
+								"Sharing could not start (" + st.error + ").");
+						});
+						return;
+					}
+					if (!ftpdPid() && waited < 5000) {
+						waited += 200;
+						setTimeout(check, 200);
+						return;
+					}
+					if (!ftpdPid()) {
+						shareFirewall(c.port, false, function() {
+							fail(future, "Sharing could not start.");
+						});
+						return;
+					}
+					log("sharing on port " + c.port);
+					shareStatus(future);
+				})();
+			});
+		});
+	});
+	return future;
+};
 
 // ---- archives -----------------------------------------------------------------
 
@@ -1891,7 +3110,7 @@ function archiveNote(code, errors, what) {
 // {op: "pack", paths, dest, name}
 //     Make an archive of things from one folder. The kind follows the name:
 //     .7z, .tar, or else .zip.
-function startArchive(future, args, op) {
+function startArchive(future, args, op, then) {
 	var paths = args.paths || [];
 	var dest = cleanFolder(args.dest, args.system);
 	var steps = [];
@@ -2102,7 +3321,7 @@ function startArchive(future, args, op) {
 	}
 
 	setTimeout(function() {
-		runSteps(steps, finish);
+		runSteps(steps, then ? phaseEnd(then) : finish);
 	}, 10);
 	future.result = {returnValue: true, ok: true, id: job.id};
 	return future;
@@ -2123,11 +3342,20 @@ startAssistant.prototype.run = function(future) {
 	if (job && !job.finished) {
 		return fail(future, APP_NAME + " is still busy with the last thing you asked for.");
 	}
+	if (op === "fetch") {
+		return startFetch(future, args);
+	}
+	if ((op === "extract" || op === "pack") && args.net) {
+		return startNetArchive(future, args, op);
+	}
 	if (op === "extract" || op === "pack") {
 		return startArchive(future, args, op);
 	}
 	if (op !== "copy" && op !== "move" && op !== "delete") {
 		return fail(future, "Unknown job.");
+	}
+	if (args.net && args.toNet) {
+		return startRelay(future, args, op);
 	}
 	if (args.net) {
 		return startNet(future, args, op);
