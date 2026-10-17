@@ -20,7 +20,7 @@ enyo.kind({
 					// Tapping the path's empty end turns it into a box for typing a path or an address.
 					{name: "crumbs", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs", onclick: "netClick"},
 					{name: "addrBar", kind: "HFlexBox", flex: 1, align: "center", className: "fm-crumbs", showing: false, components: [
-						{name: "addr", kind: "Input", flex: 1, className: "fm-addr", hint: "A folder, or ftp://, sftp://, smb:// and a server",
+						{name: "addr", kind: "Input", flex: 1, className: "fm-addr", hint: "A folder, or ftp://, sftp://, smb://, davs:// and a server",
 							autoCapitalize: "lowercase", autocorrect: false, spellcheck: false, onkeydown: "addrKey"},
 						{kind: "Button", caption: "Go", className: "enyo-button-blue fm-go", onclick: "netGo"}
 					]},
@@ -656,7 +656,16 @@ enyo.kind({
 		var self = this;
 		this.$.svc.ask("driveAccounts", {}, function(r) {
 			var list = r.ok ? r.accounts || [] : [];
-			self.$.tree.setClouds(list.length ? [{name: "Google Drive", path: "gdrive://drive"}] : []);
+			var clouds = list.length ? [{name: "Google Drive", path: "gdrive://drive"}] : [];
+			// Nextcloud accounts, made by the Nextcloud app.
+			self.$.svc.ask("nextcloudAccounts", {}, function(r2) {
+				var nc = r2.ok ? r2.accounts || [] : [];
+				for (var i = 0; i < nc.length; i++) {
+					clouds.push({name: nc.length > 1 ? "Nextcloud (" + nc[i].name + ")" : "Nextcloud",
+						path: "nextcloud://" + nc[i].id});
+				}
+				self.$.tree.setClouds(clouds);
+			});
 		});
 	},
 
@@ -786,7 +795,7 @@ enyo.kind({
 			return FM.nameOf(path);
 		}
 		var root = FM.netRootOf(path);
-		var host = FM.netKind(path) === "GDRIVE" ? "Google Drive" : root.replace(/^[a-z]+:\/\//i, "");
+		var host = FM.netName(path);
 		return path === root ? host : FM.nameOf(path) + " on " + host;
 	},
 
@@ -1134,7 +1143,7 @@ enyo.kind({
 			text += "  ·  " + FM.size(this.free) + " free";
 		}
 		if (FM.isNet(this.path)) {
-			text += this.siteFor(this.path) ? "  ·  " + (FM.netKind(this.path) === "GDRIVE" ? "Google Drive" : FM.netKind(this.path)) : "";
+			text += this.siteFor(this.path) ? "  ·  " + FM.netLabel(this.path) : "";
 		} else if (!FM.inStorage(this.path)) {
 			text += this.canChange() ? "  ·  System files: changes allowed" : "  ·  Read-only";
 		}

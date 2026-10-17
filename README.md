@@ -64,6 +64,13 @@ and a tappable path across the top. It reaches the whole system, not only the US
   but Google. Signing out of Google in Atlas signs Drive out too. As it is not
   Google's published API, a change on Google's side can break it.
 
+**Nextcloud and WebDAV**
+- A Nextcloud account in Accounts (made by the Nextcloud app, 0.2.0 or later)
+  shows in the folder tree, and works like the other network folders. Its
+  sign-in stays in Accounts, which lets only the Nextcloud app and Topaz
+  Explorer read it.
+- Any other WebDAV server opens from the path bar as `davs://server/path`.
+
 **Sharing**
 - "Share Over FTP" in the app menu lets other computers open the TouchPad's
   storage with a name and password, optionally read-only. It keeps going when

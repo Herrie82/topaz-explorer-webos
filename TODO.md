@@ -74,6 +74,14 @@ Not yet: Shared with me and shared drives; more than one Google account
 exporting a Google document as anything but its Office kind. Unofficial API:
 expect to adjust it when Google changes the web client.
 
+## Nextcloud and WebDAV, 2026-10-17
+
+WebDAV through the system's curl (PROPFIND to list, GET, PUT, MKCOL, MOVE,
+DELETE). nextcloud://<account id>/ reads the server, user and app password
+from the Nextcloud app's account in Accounts (template com.stark.nextcloud,
+whose readPermissions name com.palm.stark.files and its service); davs:// and
+dav:// take a typed server. Tried by the user on the TouchPad.
+
 ## Checked on the TouchPad (2026-10-10)
 
 By screenshot: details list, icons view with photo thumbnails, folder tree, path bar, a system

@@ -546,6 +546,31 @@
 	background-image: url(../images/netdrive.png);
 }
 
+.fm-tree-icon-cloud {
+	background-image: url(../images/cloud.png);
+}
+
+/* Inside Accounts: signing in to Google Drive. */
+.fm-drive-sign {
+	padding: 24px 32px;
+}
+
+.fm-drive-title {
+	font-size: 24px;
+	font-weight: bold;
+	margin-bottom: 12px;
+}
+
+.fm-drive-text {
+	font-size: 17px;
+	line-height: 1.4;
+	margin-bottom: 16px;
+}
+
+.fm-drive-buttons {
+	max-width: 480px;
+}
+
 /* Share Over FTP */
 .fm-share-where {
 	margin: 4px 0 10px;

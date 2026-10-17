@@ -1168,7 +1168,7 @@ function writeConf(name, value) {
 // "DOMAIN\name".
 function parseNet(url) {
 	url = String(url || "").replace(/^\s+|\s+$/g, "");
-	var m = /^(ftps?|sftp|smb|gdrive):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
+	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
 	if (!m) {
 		return null;
 	}
@@ -1195,7 +1195,7 @@ function parseNet(url) {
 
 // Whether a path an app sent is a folder or file on a site.
 function isNetPath(path) {
-	return /^(ftps?|sftp|smb|gdrive):\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\//i.test(String(path || ""));
 }
 
 // The path on the site of a full address: "ftp://host/a/b" -> "/a/b".
@@ -1618,6 +1618,10 @@ function netToolWhy(err) {
 // Each done(errorText, ...) gets "" when it worked.
 
 function siteList(site, path, done) {
+	if (site.kind === "dav") {
+		davList(site, path, done);
+		return;
+	}
 	if (site.kind === "gdrive") {
 		driveList(site, path, done);
 		return;
@@ -1643,6 +1647,10 @@ function siteList(site, path, done) {
 }
 
 function siteGet(site, remote, local, onBytes, done) {
+	if (site.kind === "dav") {
+		davGet(site, remote, local, done);
+		return;
+	}
 	if (site.kind === "gdrive") {
 		driveGet(site, remote, local, done);
 		return;
@@ -1659,6 +1667,10 @@ function siteGet(site, remote, local, onBytes, done) {
 }
 
 function sitePut(site, local, remote, onBytes, done) {
+	if (site.kind === "dav") {
+		davPut(site, local, remote, done);
+		return;
+	}
 	if (site.kind === "gdrive") {
 		drivePut(site, local, remote, done);
 		return;
@@ -1676,6 +1688,10 @@ function sitePut(site, local, remote, onBytes, done) {
 
 // done(errorText, already): already is true when the folder was there.
 function siteMkdir(site, path, done) {
+	if (site.kind === "dav") {
+		davMkdir(site, path, done);
+		return;
+	}
 	if (site.kind === "gdrive") {
 		driveMkdir(site, path, done);
 		return;
@@ -1696,6 +1712,10 @@ function siteMkdir(site, path, done) {
 }
 
 function siteRename(site, from, to, done) {
+	if (site.kind === "dav") {
+		davMove(site, from, to, done);
+		return;
+	}
 	if (site.kind === "gdrive") {
 		driveRename(site, from, to, done);
 		return;
@@ -1713,6 +1733,10 @@ function siteRename(site, from, to, done) {
 
 // Take away a file, or a folder that is already empty.
 function siteRemove(site, path, isDir, done) {
+	if (site.kind === "dav") {
+		davDelete(site, path, done);
+		return;
+	}
 	if (site.kind === "gdrive") {
 		driveTrash(site, path, done);
 		return;
@@ -1730,7 +1754,7 @@ function siteRemove(site, path, isDir, done) {
 
 // A copy of a site with a connection of its own, for a job.
 function jobSite(site) {
-	if (site.kind === "ftp" || site.kind === "gdrive") {
+	if (site.kind === "ftp" || site.kind === "gdrive" || site.kind === "dav") {
 		return site;
 	}
 	var copy = {};
@@ -1774,6 +1798,18 @@ netOpenAssistant.prototype.run = function(future) {
 	var site = parseNet(args.url);
 	if (!site) {
 		return fail(future, "That is not an ftp://, sftp:// or smb:// address.");
+	}
+	if (site.scheme === "nextcloud" || site.scheme === "dav" || site.scheme === "davs") {
+		davOpen(site, function(err, d, login) {
+			if (err) {
+				future.result = {returnValue: true, ok: false, login: !!login && site.scheme !== "nextcloud", error: err};
+				return;
+			}
+			nets[++netCount] = d;
+			log("site opened: " + site.scheme + "://" + site.host);
+			future.result = {returnValue: true, ok: true, id: netCount, home: "/"};
+		});
+		return future;
 	}
 	if (site.scheme === "gdrive") {
 		driveOpen(function(err, d) {
@@ -2056,8 +2092,9 @@ function netUpSteps(steps, site, from, remote, st) {
 function netDeleteSteps(steps, site, remote, isDir) {
 	steps.push(function(next) {
 		job.current = nameOf(remote);
-		// A folder in Google Drive goes to its trash whole.
-		if (!isDir || site.kind === "gdrive") {
+		// A folder in Google Drive goes to its trash whole, and WebDAV deletes a
+		// folder with everything in it.
+		if (!isDir || site.kind === "gdrive" || site.kind === "dav") {
 			siteRemove(site, remote, false, function(err) {
 				job.doneThings++;
 				if (err && !job.cancelled) {
@@ -2824,6 +2861,270 @@ function driveTrash(site, path, done) {
 			done(err2);
 		});
 	});
+}
+
+// ---- WebDAV: Nextcloud accounts, and davs:// addresses ----------------------
+//
+// A Nextcloud account in Accounts (made by the Nextcloud app, template
+// com.stark.nextcloud) is opened as nextcloud://<account id>/: its server,
+// user and app password are read from Accounts, which lets this service read
+// them because the template names it in readPermissions. Any other WebDAV
+// server can be typed as davs://user@host/path (or dav:// without TLS).
+//
+// Everything goes through the system's curl, one request per operation, with
+// the sign-in on curl's input: PROPFIND to list, GET and PUT to move files,
+// MKCOL, MOVE and DELETE (which takes a folder with everything in it).
+
+var NC_TEMPLATE = "com.stark.nextcloud";
+
+// The Nextcloud accounts in Accounts: done([{id, name}]).
+function nextcloudAccounts(done) {
+	try {
+		IMPORTS.foundations.Comms.PalmCall.call("palm://com.palm.service.accounts/", "listAccounts",
+			{templateId: NC_TEMPLATE}).then(function(f) {
+				var list = [];
+				try {
+					var r = f.result || {};
+					for (var i = 0; r.results && i < r.results.length; i++) {
+						list.push({id: r.results[i]._id, name: r.results[i].username || "Nextcloud"});
+					}
+				} catch (e) {}
+				done(list);
+			});
+	} catch (e) {
+		done([]);
+	}
+}
+
+// {} -> {accounts: [{id, name}]}
+var nextcloudAccountsAssistant = function() {};
+nextcloudAccountsAssistant.prototype.run = function(future) {
+	nextcloudAccounts(function(list) {
+		future.result = {returnValue: true, ok: true, accounts: list};
+	});
+	return future;
+};
+
+// A Nextcloud account's sign-in, from Accounts: done(error, {url, user, userId, password}).
+function nextcloudCredentials(accountId, done) {
+	try {
+		IMPORTS.foundations.Comms.PalmCall.call("palm://com.palm.service.accounts/", "readCredentials",
+			{accountId: accountId, name: "common"}).then(function(f) {
+				var c = null;
+				try {
+					c = f.result && f.result.credentials;
+				} catch (e) {}
+				if (!c || !c.url || !c.password) {
+					done("The Nextcloud account's sign-in could not be read. Open the Nextcloud app and sign in again.");
+					return;
+				}
+				done("", c);
+			});
+	} catch (e) {
+		done("The Nextcloud account's sign-in could not be read.");
+	}
+}
+
+function davCurl(site, args, done) {
+	var out = [];
+	var err = "";
+	var child;
+	try {
+		child = child_process.spawn(CURL, ["-K", "-", "--silent", "--show-error", "--connect-timeout", String(NET_CONNECT),
+			"-H", "Expect:", "-w", "\n%{http_code}"].concat(args), {cwd: "/"});
+	} catch (e) {
+		setTimeout(function() {
+			done(0, "", String(e));
+		}, 0);
+		return;
+	}
+	if (job && !job.finished) {
+		job.kids = job.kids || [];
+		job.kids.push(child);
+	}
+	child.stdout.on("data", function(d) {
+		out.push(d.toString());
+	});
+	child.stderr.on("data", function(d) {
+		err += d.toString();
+	});
+	child.on("exit", function() {
+		if (job && job.kids) {
+			var at = job.kids.indexOf(child);
+			if (at >= 0) {
+				job.kids.splice(at, 1);
+			}
+		}
+		var text = out.join("");
+		var cut = text.lastIndexOf("\n");
+		done(Number(text.substring(cut + 1)) || 0, text.substring(0, cut), err);
+	});
+	function quoted(s) {
+		return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\r\n]/g, " ");
+	}
+	try {
+		child.stdin.write("user = \"" + quoted(site.user) + ":" + quoted(site.pass) + "\"\n");
+		child.stdin.end();
+	} catch (e2) {}
+}
+
+// The URL of something on the server: each part of the path encoded.
+function davUrl(site, path, folder) {
+	var enc = [];
+	var parts = String(path || "/").split("/");
+	for (var i = 0; i < parts.length; i++) {
+		if (parts[i]) {
+			enc.push(encodeURIComponent(parts[i]));
+		}
+	}
+	var url = site.base + enc.join("/");
+	return folder && enc.length ? url + "/" : url;
+}
+
+function davWhy(code, err) {
+	if (code === 401) {
+		return "The server refused the name or password.";
+	}
+	if (code === 403) {
+		return "The server would not allow that.";
+	}
+	if (code === 404 || code === 409) {
+		return "That is not on the server, or the server would not show it.";
+	}
+	if (code === 507) {
+		return "The server is out of space.";
+	}
+	if (!code) {
+		log("dav: curl failed: " + String(err || "").replace(/\s+/g, " ").substring(0, 200));
+		return "Could not reach the server.";
+	}
+	log("dav said " + code);
+	return "The server did not do what was asked (" + code + ").";
+}
+
+function xmlText(s) {
+	return String(s || "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"")
+		.replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
+}
+
+function davList(site, path, done) {
+	var body = "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/>" +
+		"<d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>";
+	var url = davUrl(site, path, true);
+	davCurl(site, ["-X", "PROPFIND", "-H", "Depth: 1", "-H", "Content-Type: application/xml; charset=utf-8",
+		"--data-binary", body, url], function(code, text, err) {
+		if (code !== 207) {
+			done(davWhy(code, err), null);
+			return;
+		}
+		// The folder itself comes back as one of the answers: known by its path.
+		var self = url.replace(/^https?:\/\/[^\/]+/i, "").replace(/\/+$/, "");
+		try {
+			self = decodeURIComponent(self);
+		} catch (e0) {}
+		var blocks = text.split(/<(?:[A-Za-z0-9_\-]+:)?response[\s>]/).slice(1);
+		var entries = [];
+		for (var i = 0; i < blocks.length; i++) {
+			var b = blocks[i];
+			var href = /<(?:[A-Za-z0-9_\-]+:)?href>([^<]*)</.exec(b);
+			if (!href) {
+				continue;
+			}
+			var p = xmlText(href[1]).replace(/^https?:\/\/[^\/]+/i, "").replace(/\/+$/, "");
+			try {
+				p = decodeURIComponent(p);
+			} catch (e1) {}
+			if (p === self || !p) {
+				continue;
+			}
+			var name = p.substring(p.lastIndexOf("/") + 1);
+			var dir = /<(?:[A-Za-z0-9_\-]+:)?collection\s*\/?>/.test(b);
+			var len = /<(?:[A-Za-z0-9_\-]+:)?getcontentlength[^>]*>(\d+)</.exec(b);
+			var mod = /<(?:[A-Za-z0-9_\-]+:)?getlastmodified[^>]*>([^<]+)</.exec(b);
+			entries.push({n: name, d: dir ? 1 : 0, s: len ? Number(len[1]) : 0, m: mod ? Date.parse(mod[1]) || 0 : 0});
+		}
+		done("", entries);
+	});
+}
+
+function davGet(site, remote, local, done) {
+	davCurl(site, ["-o", local, davUrl(site, remote, false)], function(code, text, err) {
+		if (code !== 200) {
+			try { fs.unlinkSync(local); } catch (e) {}
+			done(davWhy(code, err));
+			return;
+		}
+		done("");
+	});
+}
+
+function davPut(site, local, remote, done) {
+	davCurl(site, ["-T", local, davUrl(site, remote, false)], function(code, text, err) {
+		done(code === 200 || code === 201 || code === 204 ? "" : davWhy(code, err));
+	});
+}
+
+// done(error, already)
+function davMkdir(site, path, done) {
+	davCurl(site, ["-X", "MKCOL", davUrl(site, path, true)], function(code, text, err) {
+		if (code === 201) {
+			done("", false);
+		} else {
+			done(code === 405 ? "There is already something by that name there." : davWhy(code, err), code === 405);
+		}
+	});
+}
+
+function davMove(site, from, to, done) {
+	davCurl(site, ["-X", "MOVE", "-H", "Destination: " + davUrl(site, to, false), "-H", "Overwrite: F",
+		davUrl(site, from, false)], function(code, text, err) {
+		if (code === 201 || code === 204) {
+			done("");
+		} else {
+			done(code === 412 ? "There is already something by that name there." : davWhy(code, err));
+		}
+	});
+}
+
+// A file, or a folder with everything in it.
+function davDelete(site, path, done) {
+	davCurl(site, ["-X", "DELETE", davUrl(site, path, false)], function(code, text, err) {
+		done(code === 200 || code === 204 ? "" : davWhy(code, err));
+	});
+}
+
+// Open nextcloud://<account id>/ or davs://user:pass@host/: done(error, site, login).
+function davOpen(parts, done) {
+	function check(site, start) {
+		davCurl(site, ["-X", "PROPFIND", "-H", "Depth: 0", davUrl(site, start || "/", true)], function(code, text, err) {
+			if (code === 207) {
+				done("", site);
+			} else if (code === 401) {
+				done(davWhy(code, err), null, true);
+			} else {
+				done(davWhy(code, err), null);
+			}
+		});
+	}
+	if (parts.scheme === "nextcloud") {
+		nextcloudCredentials(parts.host, function(err, c) {
+			if (err) {
+				done(err, null);
+				return;
+			}
+			var url = String(c.url).replace(/\/+$/, "");
+			check({kind: "dav", host: "nextcloud-" + parts.host,
+				base: url + "/remote.php/dav/files/" + encodeURIComponent(c.userId || c.user) + "/",
+				user: c.user, pass: c.password});
+		});
+		return;
+	}
+	var tls = parts.scheme === "davs";
+	// The server's top is the site's top, as for FTP; the address's path is
+	// where the app starts, and is what the sign-in is tried on.
+	check({kind: "dav", host: parts.host + (parts.port ? "-" + parts.port : ""),
+		base: (tls ? "https://" : "http://") + parts.host + (parts.port ? ":" + parts.port : "") + "/",
+		user: parts.user, pass: parts.pass}, cleanNetPath(parts.start || "/"));
 }
 
 // ---- work through the TouchPad: between sites, archives on a site, opening ----

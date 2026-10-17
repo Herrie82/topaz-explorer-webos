@@ -27,6 +27,7 @@
 				{ "name": "netSearch", "assistant": "netSearchAssistant", "public": true },
 				{ "name": "driveCheck", "assistant": "driveCheckAssistant", "public": true },
 				{ "name": "driveAccounts", "assistant": "driveAccountsAssistant", "public": true },
+				{ "name": "nextcloudAccounts", "assistant": "nextcloudAccountsAssistant", "public": true },
 				{ "name": "share", "assistant": "shareAssistant", "public": true },
 				{ "name": "shareStatus", "assistant": "shareStatusAssistant", "public": true },
 				{ "name": "start", "assistant": "startAssistant", "public": true },
