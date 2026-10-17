@@ -183,9 +183,13 @@ enyo.kind({
 			if (self.awake || turn !== self.wakes) {
 				return;
 			}
-			if (tries >= 8) {
+			// Right after an install the system can take a minute to start it.
+			if (tries >= 36) {
 				self.$.files.showNote("The file helper did not start. Close " + FM.APP_NAME + " and open it again.");
 				return;
+			}
+			if (tries === 2) {
+				self.$.files.showNote("Waiting for the file helper to start…");
 			}
 			self.wake(tries + 1);
 		}, 2500);
