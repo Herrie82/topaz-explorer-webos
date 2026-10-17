@@ -1,0 +1,7 @@
+{
+    "com.palm.stark.files.service": [
+        "accountsservice.operation",
+        "activity.operation",
+        "preferences.systempropertyquery"
+    ]
+}

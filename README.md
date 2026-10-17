@@ -103,6 +103,11 @@ by side. What else differs:
 - **"Allow System Changes"** leaves LuneOS's system disk as it is: it is
   writable already, so there is nothing to open, and closing does not make
   it read-only.
+- **Built into a LuneOS image**, the app comes from LuneOS's own recipe
+  rather than the package. The bus files for the service that the installer
+  would otherwise write are in `files/sysbus`, and the recipe installs them
+  from there. The `requiredPermissions` in `app/appinfo.json` say which
+  system calls the app makes.
 
 The 4 GB limit applies only where the storage is FAT, as on the TouchPad
 under legacy webOS.
