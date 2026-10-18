@@ -2405,10 +2405,13 @@ var DRIVE_EXPORTS = {
 	}
 })();
 
-// Atlas's Google cookies: done(error, {cookie, sapisid}).
+// Atlas's Google cookies: done(error, {cookie, sapisid, jar}). cookie is the header for
+// drive.google.com and the API; jar holds every Google cookie Atlas has, in curl's
+// cookie-file form, for the hosts a download is sent on to (see driveCurl).
 function atlasCookies(done) {
 	var out = "";
-	var sql = "select name, value from moz_cookies where host in ('.google.com', 'google.com', 'drive.google.com', '.drive.google.com');";
+	var sql = "select name, value, host, path, isSecure, expiry from moz_cookies where host like '%google.com';";
+	var mine = {".google.com": 1, "google.com": 1, "drive.google.com": 1, ".drive.google.com": 1};
 	var child;
 	if (!exists(ATLAS_COOKIES) || !exists(SQLITE)) {
 		done("Atlas was not found on this " + DEVICE + ". Install Atlas and sign in to Google there.");
@@ -2428,14 +2431,18 @@ function atlasCookies(done) {
 		var parts = [];
 		var seen = {};
 		var sapisid = "";
+		var jar = ["# Netscape HTTP Cookie File"];
 		for (var i = 0; i < lines.length; i++) {
-			var at = lines[i].indexOf("\t");
-			if (at <= 0) {
+			var f = lines[i].replace(/\r$/, "").split("\t");
+			if (f.length < 6 || !f[0]) {
 				continue;
 			}
-			var name = lines[i].substring(0, at);
-			var value = lines[i].substring(at + 1).replace(/[\r\n]/g, "");
-			if (seen[name]) {
+			var name = f[0];
+			var value = f[1];
+			var host = f[2];
+			jar.push([host, host.charAt(0) === "." ? "TRUE" : "FALSE", f[3] || "/", f[4] === "1" ? "TRUE" : "FALSE",
+				f[5] || "0", name, value].join("\t"));
+			if (!mine[host] || seen[name]) {
 				continue;
 			}
 			seen[name] = true;
@@ -2448,21 +2455,40 @@ function atlasCookies(done) {
 			done("Atlas is not signed in to Google. Open Atlas, sign in at drive.google.com, then try again.");
 			return;
 		}
-		done("", {cookie: parts.join("; "), sapisid: sapisid});
+		done("", {cookie: parts.join("; "), sapisid: sapisid, jar: jar.join("\n") + "\n"});
 	});
 }
 
 // Run curl for Drive. headers: true sends the API's sign-in as well as the
 // cookies. done(httpCode, body, errorText).
-function driveCurl(site, args, done, headers) {
+// withJar: every Google cookie goes as a cookie file that curl also keeps up to
+// date, in place of the one Cookie header. A Google document's export is sent
+// through accounts.google.com to sign in to docs.google.com, as a browser is, and
+// comes back only when the cookies that hop sets are carried on.
+var jarCount = 0;
+function driveCurl(site, args, done, headers, withJar) {
 	var out = [];
 	var err = "";
 	var child;
+	var jarFile = "";
+	if (withJar && site.jar) {
+		jarFile = "/tmp/.topaz-gdrive-" + process.pid + "-" + (++jarCount);
+		try {
+			fs.writeFileSync(jarFile, site.jar);
+			fs.chmodSync(jarFile, 384);
+			args = ["-b", jarFile, "-c", jarFile].concat(args);
+		} catch (eJar) {
+			jarFile = "";
+		}
+	}
 	try {
 		child = child_process.spawn(CURL, ["-K", "-", "--silent", "--show-error", "--connect-timeout", String(NET_CONNECT),
 			// No "Expect: 100-continue": Google's interim answer would read as the result.
 			"-A", DRIVE_UA, "-H", "Expect:", "-w", "\n%{http_code}"].concat(args), {cwd: "/"});
 	} catch (e) {
+		if (jarFile) {
+			try { fs.unlinkSync(jarFile); } catch (eGone2) {}
+		}
 		setTimeout(function() {
 			done(0, "", String(e));
 		}, 0);
@@ -2485,6 +2511,9 @@ function driveCurl(site, args, done, headers) {
 				job.kids.splice(at, 1);
 			}
 		}
+		if (jarFile) {
+			try { fs.unlinkSync(jarFile); } catch (eGone) {}
+		}
 		var text = out.join("");
 		var cut = text.lastIndexOf("\n");
 		done(Number(text.substring(cut + 1)) || 0, text.substring(0, cut), err);
@@ -2492,7 +2521,7 @@ function driveCurl(site, args, done, headers) {
 	function quoted(s) {
 		return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\r\n]/g, " ");
 	}
-	var conf = "header = \"Cookie: " + quoted(site.cookie) + "\"\n";
+	var conf = jarFile ? "" : "header = \"Cookie: " + quoted(site.cookie) + "\"\n";
 	if (headers) {
 		var ts = Math.floor(new Date().getTime() / 1000);
 		var hash = require("crypto").createHash("sha1").update(ts + " " + site.sapisid + " " + DRIVE_ORIGIN).digest("hex");
@@ -2557,7 +2586,7 @@ function driveOpen(done) {
 			done(err);
 			return;
 		}
-		var site = {kind: "gdrive", host: "drive", cookie: ck.cookie, sapisid: ck.sapisid, key: "", email: "",
+		var site = {kind: "gdrive", host: "drive", cookie: ck.cookie, sapisid: ck.sapisid, jar: ck.jar, key: "", email: "",
 			ids: {"/": {id: "root", d: 1}}};
 		driveCurl(site, ["-L", DRIVE_ORIGIN + "/drive/my-drive"], function(code, page) {
 			// The page carries more than one key; its own is the one it names most.
@@ -2730,7 +2759,7 @@ function driveGet(site, remote, local, done) {
 				return;
 			}
 			done("");
-		}, false);
+		}, false, true);
 	});
 }
 
