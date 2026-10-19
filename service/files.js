@@ -3226,8 +3226,11 @@ function cloudAccounts(done) {
 							var svc = String(caps[j].implementation || "");
 							if (caps[j].capability === "DOCUMENTS" && /^palm:\/\/[^\/]+\/?$/.test(svc) &&
 									svc.replace(/\/?$/, "/") !== SERVICE) {
-								list.push({id: a._id, name: a.alias || a.username || a.loc_name || "Cloud",
-									provider: a.loc_name || "", service: svc.replace(/\/?$/, "/")});
+								var trim = function(x) {
+									return String(x || "").replace(/^\s+|\s+$/g, "");
+								};
+								list.push({id: a._id, name: trim(a.alias) || trim(a.username) || trim(a.loc_name) || "Cloud",
+									provider: trim(a.loc_name), service: svc.replace(/\/?$/, "/")});
 								break;
 							}
 						}
