@@ -3211,7 +3211,8 @@ function davOpen(parts, done) {
 // are kept in site.ids, as for Google Drive. A connector without createFolder,
 // moveItem or deleteItem answers NOT_SUPPORTED, which is said as such.
 
-// The cloud accounts in Accounts: done([{id, name, provider, service}]).
+// The cloud accounts in Accounts: done([{id, name, provider, service, icon}]). icon is the
+// account template's own picture of the provider, a path, or "".
 function cloudAccounts(done) {
 	try {
 		IMPORTS.foundations.Comms.PalmCall.call("palm://com.palm.service.accounts/", "listAccounts",
@@ -3229,8 +3230,10 @@ function cloudAccounts(done) {
 								var trim = function(x) {
 									return String(x || "").replace(/^\s+|\s+$/g, "");
 								};
+								var icons = a.icon || {};
 								list.push({id: a._id, name: trim(a.alias) || trim(a.username) || trim(a.loc_name) || "Cloud",
-									provider: trim(a.loc_name), service: svc.replace(/\/?$/, "/")});
+									provider: trim(a.loc_name), service: svc.replace(/\/?$/, "/"),
+									icon: String(icons.loc_48x48 || icons.loc_32x32 || "")});
 								break;
 							}
 						}
@@ -3243,13 +3246,13 @@ function cloudAccounts(done) {
 	}
 }
 
-// {} -> {accounts: [{id, name, provider}]}
+// {} -> {accounts: [{id, name, provider, icon}]}
 var cloudAccountsAssistant = function() {};
 cloudAccountsAssistant.prototype.run = function(future) {
 	cloudAccounts(function(list) {
 		var out = [];
 		for (var i = 0; i < list.length; i++) {
-			out.push({id: list[i].id, name: list[i].name, provider: list[i].provider});
+			out.push({id: list[i].id, name: list[i].name, provider: list[i].provider, icon: list[i].icon});
 		}
 		future.result = {returnValue: true, ok: true, accounts: out};
 	});

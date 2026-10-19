@@ -674,7 +674,7 @@ enyo.kind({
 						var name = cl[j].provider ? cl[j].provider + (cl[j].name && cl[j].name !== cl[j].provider ?
 							" (" + cl[j].name + ")" : "") : cl[j].name;
 						FM.clouds[site] = {name: name, provider: cl[j].provider};
-						clouds.push({name: name, path: site});
+						clouds.push({name: name, path: site, icon: cl[j].icon});
 					}
 					self.$.tree.setClouds(clouds);
 				});
