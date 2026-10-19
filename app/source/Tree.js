@@ -48,11 +48,12 @@ enyo.kind({
 		this.setFavorites(FM.favorites());
 	},
 
-	// The cloud drives to show: [{name, path}].
+	// The cloud drives to show: [{name, path, icon}]; icon, a picture's path, in place of the cloud.
 	setClouds: function(list) {
 		this.clouds = [];
 		for (var i = 0; i < list.length; i++) {
-			this.clouds.push({path: list[i].path, name: list[i].name, depth: 0, cloud: true, hasKids: false});
+			this.clouds.push({path: list[i].path, name: list[i].name, depth: 0, cloud: true, hasKids: false,
+				icon: list[i].icon || ""});
 		}
 		this.flatten();
 	},
@@ -244,6 +245,14 @@ enyo.kind({
 			icon = node.path === FM.ROOT ? " fm-tree-icon-device" : " fm-tree-icon-system";
 		}
 		this.$.icon.setClassName("fm-tree-icon" + icon);
+		// A cloud account's own provider picture. Rows are drawn again for other nodes, so it is
+		// taken off as well as put on.
+		// The list is drawn as HTML text, the style inside style="...", so the URL takes single
+		// quotes and no character of the path may end it.
+		this.$.icon.applyStyle("background-image", node.icon ? "url('file://" +
+			encodeURI(node.icon).replace(/'/g, "%27").replace(/\(/g, "%28").replace(/\)/g, "%29") + "')" : "");
+		// Not every provider's picture is square (Yandex Disk's is 48x32): fit it, not stretch it.
+		this.$.icon.applyStyle("-webkit-background-size", node.icon ? "contain" : "");
 		this.$.name.setContent(node.name);
 		return true;
 	},

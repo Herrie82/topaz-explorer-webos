@@ -139,14 +139,14 @@ FM.thumbUrl = function(path, px) {
 
 // Whether a path is a folder or file on a site (FTP, FTPS, SFTP or SMB).
 FM.isNet = function(path) {
-	return /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb|gdrive|nextcloud|cloud|davs?):\/\//i.test(String(path || ""));
 };
 
 // The parts of a site address, or null: {scheme, host, port, user, pass, domain, start}.
 // The name and password, when the address carries them, are taken plainly; an
 // SMB name may carry its domain, "DOMAIN;name" or "DOMAIN\name".
 FM.parseNet = function(url) {
-	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i
+	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|cloud|davs?):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i
 		.exec(String(url || "").replace(/^\s+|\s+$/g, ""));
 	if (!m) {
 		return null;
@@ -180,13 +180,13 @@ FM.netRoot = function(parts) {
 
 // The site part of a path on a site: "smb://nas/Music/x" -> "smb://nas".
 FM.netRootOf = function(path) {
-	var m = /^((?:ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\/[^\/]+)/i.exec(String(path || ""));
+	var m = /^((?:ftps?|sftp|smb|gdrive|nextcloud|cloud|davs?):\/\/[^\/]+)/i.exec(String(path || ""));
 	return m ? m[1] : "";
 };
 
 // What kind of site a path is on, for the status bar: "FTP", "SFTP", "SMB".
 FM.netKind = function(path) {
-	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):/i.exec(String(path || ""));
+	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|cloud|davs?):/i.exec(String(path || ""));
 	return m ? m[1].toUpperCase() : "";
 };
 
@@ -194,13 +194,24 @@ FM.netKind = function(path) {
 // or its name for the path bar and favorites ("nas:2222", "Nextcloud").
 FM.netLabel = function(path) {
 	var kind = FM.netKind(path);
+	if (kind === "CLOUD") {
+		var c = FM.clouds[FM.netRootOf(path)];
+		return c && c.provider ? c.provider : "Cloud";
+	}
 	return {GDRIVE: "Google Drive", NEXTCLOUD: "Nextcloud", DAV: "WebDAV", DAVS: "WebDAV"}[kind] || kind;
 };
+
+// The cloud accounts the folder tree shows, by site: {"cloud://<id>": {name, provider}}.
+FM.clouds = {};
 
 FM.netName = function(path) {
 	var kind = FM.netKind(path);
 	if (kind === "GDRIVE" || kind === "NEXTCLOUD") {
 		return FM.netLabel(path);
+	}
+	if (kind === "CLOUD") {
+		var c = FM.clouds[FM.netRootOf(path)];
+		return c ? c.name : "Cloud";
 	}
 	return FM.netRootOf(path).replace(/^[a-z]+:\/\//i, "");
 };
