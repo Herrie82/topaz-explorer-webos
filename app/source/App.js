@@ -664,7 +664,20 @@ enyo.kind({
 					clouds.push({name: nc.length > 1 ? "Nextcloud (" + nc[i].name + ")" : "Nextcloud",
 						path: "nextcloud://" + nc[i].id});
 				}
-				self.$.tree.setClouds(clouds);
+				// Every other cloud account with a connector for documents: Dropbox,
+				// Box, OneDrive and the rest, each under its provider's name.
+				self.$.svc.ask("cloudAccounts", {}, function(r3) {
+					var cl = r3.ok ? r3.accounts || [] : [];
+					FM.clouds = {};
+					for (var j = 0; j < cl.length; j++) {
+						var site = "cloud://" + cl[j].id;
+						var name = cl[j].provider ? cl[j].provider + (cl[j].name && cl[j].name !== cl[j].provider ?
+							" (" + cl[j].name + ")" : "") : cl[j].name;
+						FM.clouds[site] = {name: name, provider: cl[j].provider};
+						clouds.push({name: name, path: site});
+					}
+					self.$.tree.setClouds(clouds);
+				});
 			});
 		});
 	},

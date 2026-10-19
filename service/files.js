@@ -1168,7 +1168,7 @@ function writeConf(name, value) {
 // "DOMAIN\name".
 function parseNet(url) {
 	url = String(url || "").replace(/^\s+|\s+$/g, "");
-	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
+	var m = /^(ftps?|sftp|smb|gdrive|nextcloud|cloud|davs?):\/\/(?:([^@\/]*)@)?([^\/:@]+)(?::(\d+))?(\/.*)?$/i.exec(url);
 	if (!m) {
 		return null;
 	}
@@ -1195,7 +1195,7 @@ function parseNet(url) {
 
 // Whether a path an app sent is a folder or file on a site.
 function isNetPath(path) {
-	return /^(ftps?|sftp|smb|gdrive|nextcloud|davs?):\/\//i.test(String(path || ""));
+	return /^(ftps?|sftp|smb|gdrive|nextcloud|cloud|davs?):\/\//i.test(String(path || ""));
 }
 
 // The path on the site of a full address: "ftp://host/a/b" -> "/a/b".
@@ -1618,6 +1618,10 @@ function netToolWhy(err) {
 // Each done(errorText, ...) gets "" when it worked.
 
 function siteList(site, path, done) {
+	if (site.kind === "cloud") {
+		cloudList(site, path, done);
+		return;
+	}
 	if (site.kind === "dav") {
 		davList(site, path, done);
 		return;
@@ -1647,6 +1651,10 @@ function siteList(site, path, done) {
 }
 
 function siteGet(site, remote, local, onBytes, done) {
+	if (site.kind === "cloud") {
+		cloudGet(site, remote, local, done);
+		return;
+	}
 	if (site.kind === "dav") {
 		davGet(site, remote, local, done);
 		return;
@@ -1667,6 +1675,10 @@ function siteGet(site, remote, local, onBytes, done) {
 }
 
 function sitePut(site, local, remote, onBytes, done) {
+	if (site.kind === "cloud") {
+		cloudPut(site, local, remote, done);
+		return;
+	}
 	if (site.kind === "dav") {
 		davPut(site, local, remote, done);
 		return;
@@ -1688,6 +1700,10 @@ function sitePut(site, local, remote, onBytes, done) {
 
 // done(errorText, already): already is true when the folder was there.
 function siteMkdir(site, path, done) {
+	if (site.kind === "cloud") {
+		cloudMkdir(site, path, done);
+		return;
+	}
 	if (site.kind === "dav") {
 		davMkdir(site, path, done);
 		return;
@@ -1712,6 +1728,10 @@ function siteMkdir(site, path, done) {
 }
 
 function siteRename(site, from, to, done) {
+	if (site.kind === "cloud") {
+		cloudRename(site, from, to, done);
+		return;
+	}
 	if (site.kind === "dav") {
 		davMove(site, from, to, done);
 		return;
@@ -1733,6 +1753,10 @@ function siteRename(site, from, to, done) {
 
 // Take away a file, or a folder that is already empty.
 function siteRemove(site, path, isDir, done) {
+	if (site.kind === "cloud") {
+		cloudRemove(site, path, done);
+		return;
+	}
 	if (site.kind === "dav") {
 		davDelete(site, path, done);
 		return;
@@ -1754,7 +1778,7 @@ function siteRemove(site, path, isDir, done) {
 
 // A copy of a site with a connection of its own, for a job.
 function jobSite(site) {
-	if (site.kind === "ftp" || site.kind === "gdrive" || site.kind === "dav") {
+	if (site.kind === "ftp" || site.kind === "gdrive" || site.kind === "dav" || site.kind === "cloud") {
 		return site;
 	}
 	var copy = {};
@@ -1807,6 +1831,17 @@ netOpenAssistant.prototype.run = function(future) {
 			}
 			nets[++netCount] = d;
 			log("site opened: " + site.scheme + "://" + site.host);
+			future.result = {returnValue: true, ok: true, id: netCount, home: "/"};
+		});
+		return future;
+	}
+	if (site.scheme === "cloud") {
+		cloudOpen(site.host, function(err, d) {
+			if (err) {
+				return fail(future, err);
+			}
+			nets[++netCount] = d;
+			log("cloud account opened: " + d.service);
 			future.result = {returnValue: true, ok: true, id: netCount, home: "/"};
 		});
 		return future;
@@ -2092,9 +2127,9 @@ function netUpSteps(steps, site, from, remote, st) {
 function netDeleteSteps(steps, site, remote, isDir) {
 	steps.push(function(next) {
 		job.current = nameOf(remote);
-		// A folder in Google Drive goes to its trash whole, and WebDAV deletes a
-		// folder with everything in it.
-		if (!isDir || site.kind === "gdrive" || site.kind === "dav") {
+		// A folder in Google Drive goes to its trash whole, and WebDAV and the
+		// cloud connectors delete a folder with everything in it.
+		if (!isDir || site.kind === "gdrive" || site.kind === "dav" || site.kind === "cloud") {
 			siteRemove(site, remote, false, function(err) {
 				job.doneThings++;
 				if (err && !job.cancelled) {
@@ -3154,6 +3189,306 @@ function davOpen(parts, done) {
 	check({kind: "dav", host: parts.host + (parts.port ? "-" + parts.port : ""),
 		base: (tls ? "https://" : "http://") + parts.host + (parts.port ? ":" + parts.port : "") + "/",
 		user: parts.user, pass: parts.pass}, cleanNetPath(parts.start || "/"));
+}
+
+// ---- cloud accounts: Synergy connectors ------------------------------------
+//
+// Any account in Accounts with the DOCUMENTS capability whose template names a
+// service for it - "implementation": "palm://com.palm.service.dropbox/" - is a
+// cloud drive here, opened as cloud://<account id>/. The connector does the
+// talking to its provider and keeps the sign-in; this service only calls it:
+//
+//   listFolder   {accountId, path}                  -> {entries: [{id, type, name, size, modified, path}]}
+//   downloadFile {accountId, path, localPath}
+//   uploadFile   {accountId, path, localPath, name}  (into a folder), or
+//                {accountId, path, localPath, replace: true}  (over a file)
+//   createFolder {accountId, path, name}            -> {entry}
+//   moveItem     {accountId, path, toPath | toRoot, name}  -> {entry}
+//   deleteItem   {accountId, path}
+//
+// "path" is always what listFolder gave as an entry's path (an id at some
+// providers); the top of the drive is left out. Names and what they stand for
+// are kept in site.ids, as for Google Drive. A connector without createFolder,
+// moveItem or deleteItem answers NOT_SUPPORTED, which is said as such.
+
+// The cloud accounts in Accounts: done([{id, name, provider, service}]).
+function cloudAccounts(done) {
+	try {
+		IMPORTS.foundations.Comms.PalmCall.call("palm://com.palm.service.accounts/", "listAccounts",
+			{capability: "DOCUMENTS"}).then(function(f) {
+				var list = [];
+				try {
+					var r = f.result || {};
+					for (var i = 0; r.results && i < r.results.length; i++) {
+						var a = r.results[i];
+						var caps = a.capabilityProviders || [];
+						for (var j = 0; j < caps.length; j++) {
+							var svc = String(caps[j].implementation || "");
+							if (caps[j].capability === "DOCUMENTS" && /^palm:\/\/[^\/]+\/?$/.test(svc) &&
+									svc.replace(/\/?$/, "/") !== SERVICE) {
+								list.push({id: a._id, name: a.alias || a.username || a.loc_name || "Cloud",
+									provider: a.loc_name || "", service: svc.replace(/\/?$/, "/")});
+								break;
+							}
+						}
+					}
+				} catch (e) {}
+				done(list);
+			});
+	} catch (e) {
+		done([]);
+	}
+}
+
+// {} -> {accounts: [{id, name, provider}]}
+var cloudAccountsAssistant = function() {};
+cloudAccountsAssistant.prototype.run = function(future) {
+	cloudAccounts(function(list) {
+		var out = [];
+		for (var i = 0; i < list.length; i++) {
+			out.push({id: list[i].id, name: list[i].name, provider: list[i].provider});
+		}
+		future.result = {returnValue: true, ok: true, accounts: out};
+	});
+	return future;
+};
+
+// What a connector's error means, to say to the user.
+function cloudWhy(site, e) {
+	var code = String((e && e.errorCode) || "");
+	var who = site.provider || "The cloud service";
+	if (code === "NOT_SUPPORTED") {
+		return who + " cannot do that from here yet.";
+	}
+	if (code === "PERMISSION_DENIED") {
+		return who + " does not let " + APP_NAME + " in. Its connector needs updating.";
+	}
+	if (code === "NO_CREDENTIALS" || code === "NO_STORED_CREDENTIALS" || /401|UNAUTHORIZED|TOKEN/.test(code)) {
+		return "The " + who + " account needs signing in again, in Accounts.";
+	}
+	var text = String((e && (e.errorText || e.detail)) || "");
+	log("cloud " + site.service + ": " + code + " " + text);
+	return who + " did not do what was asked" + (code ? " (" + code + ")" : "") + ".";
+}
+
+// A connector call for the site's account: done(error, reply).
+function cloudCall(site, method, params, done) {
+	params.accountId = site.account;
+	try {
+		IMPORTS.foundations.Comms.PalmCall.call(site.service, method, params).then(function(f) {
+			var r;
+			try {
+				r = f.result;
+			} catch (e) {
+				done(cloudWhy(site, e), null);
+				return;
+			}
+			if (!r || r.returnValue === false) {
+				done(cloudWhy(site, r), null);
+				return;
+			}
+			done("", r);
+		});
+	} catch (e) {
+		done(cloudWhy(site, e), null);
+	}
+}
+
+// cloud://<account id>/ -> done(error, site).
+function cloudOpen(accountId, done) {
+	cloudAccounts(function(list) {
+		for (var i = 0; i < list.length; i++) {
+			if (list[i].id === accountId) {
+				var site = {kind: "cloud", account: accountId, service: list[i].service,
+					provider: list[i].provider, name: list[i].name, ids: {"/": {loc: "", d: 1}}};
+				cloudList(site, "/", function(err) {
+					done(err, err ? null : site);
+				});
+				return;
+			}
+		}
+		done("That cloud account is not in Accounts any more.", null);
+	});
+}
+
+// A locator for the call: the top of the drive goes as nothing at all.
+function cloudLoc(params, key, it) {
+	if (it.loc) {
+		params[key] = it.loc;
+	}
+	return params;
+}
+
+// A folder's contents: done(error, entries), and what the names stand for kept.
+function cloudList(site, path, done) {
+	cloudFind(site, path, function(err, folder) {
+		if (err) {
+			done(err, null);
+			return;
+		}
+		if (!folder.d) {
+			done("That is a file, not a folder.", null);
+			return;
+		}
+		cloudCall(site, "listFolder", cloudLoc({}, "path", folder), function(err2, r) {
+			if (err2) {
+				done(err2, null);
+				return;
+			}
+			var entries = [];
+			var taken = {};
+			var items = r.entries || [];
+			for (var i = 0; i < items.length; i++) {
+				var it = items[i];
+				var dir = it.type === "folder";
+				// A slash cannot be in a name here.
+				var name = freeNetName(taken, String(it.name || "Untitled").replace(/\//g, "_"), dir);
+				taken[name.toLowerCase()] = true;
+				site.ids[netJoin(path, name)] = {loc: String(it.path || it.id || ""), d: dir ? 1 : 0};
+				var m = typeof it.modified === "number" ? it.modified : Date.parse(it.modified || "") || 0;
+				entries.push({n: name, d: dir ? 1 : 0, s: Number(it.size) || 0, m: m});
+			}
+			done("", entries);
+		});
+	});
+}
+
+// What is at a path: done(error, {loc, d}), listing the folders above it as needed.
+function cloudFind(site, path, done) {
+	if (site.ids[path]) {
+		done("", site.ids[path]);
+		return;
+	}
+	cloudList(site, parentOf(path), function(err) {
+		if (err) {
+			done(err);
+			return;
+		}
+		done(site.ids[path] ? "" : "That is not in " + (site.provider || "the cloud") + " any more.", site.ids[path]);
+	});
+}
+
+// Forget a path and everything under it, after it went or moved.
+function cloudForget(site, path) {
+	for (var k in site.ids) {
+		if (site.ids.hasOwnProperty(k) && (k === path || k.indexOf(path + "/") === 0)) {
+			delete site.ids[k];
+		}
+	}
+}
+
+function cloudGet(site, remote, local, done) {
+	cloudFind(site, remote, function(err, it) {
+		if (err) {
+			done(err);
+			return;
+		}
+		cloudCall(site, "downloadFile", {path: it.loc, localPath: local}, function(err2) {
+			done(err2);
+		});
+	});
+}
+
+function cloudPut(site, local, remote, done) {
+	cloudFind(site, parentOf(remote), function(err, folder) {
+		if (err) {
+			done(err);
+			return;
+		}
+		var there = site.ids[remote];
+		var params = there && !there.d ? {path: there.loc, localPath: local, replace: true} :
+			cloudLoc({localPath: local, name: nameOf(remote)}, "path", folder);
+		cloudCall(site, "uploadFile", params, function(err2) {
+			// The reply has the new file's id but not always the path the provider lists it
+			// by, so the next listing says what it stands for.
+			if (!err2 && !(there && !there.d)) {
+				delete site.ids[remote];
+			}
+			done(err2);
+		});
+	});
+}
+
+// done(error, already): already is true when the folder was there.
+function cloudMkdir(site, path, done) {
+	cloudFind(site, path, function(err0, there) {
+		if (!err0 && there) {
+			done(there.d ? "" : "A file has that name.", true);
+			return;
+		}
+		cloudFind(site, parentOf(path), function(err, folder) {
+			if (err) {
+				done(err, false);
+				return;
+			}
+			cloudCall(site, "createFolder", cloudLoc({name: nameOf(path)}, "path", folder), function(err2, r) {
+				if (!err2) {
+					var e = r.entry || {};
+					site.ids[path] = {loc: String(e.path || e.id || ""), d: 1};
+				}
+				done(err2, false);
+			});
+		});
+	});
+}
+
+function cloudRename(site, from, to, done) {
+	cloudFind(site, from, function(err, it) {
+		if (err) {
+			done(err);
+			return;
+		}
+		var params = {path: it.loc};
+		if (nameOf(to) !== nameOf(from)) {
+			params.name = nameOf(to);
+		}
+		var move = function(next) {
+			if (parentOf(to) === parentOf(from)) {
+				next("");
+				return;
+			}
+			cloudFind(site, parentOf(to), function(err2, folder) {
+				if (!err2) {
+					if (folder.loc) {
+						params.toPath = folder.loc;
+					} else {
+						params.toRoot = true;
+					}
+				}
+				next(err2);
+			});
+		};
+		move(function(err3) {
+			if (err3) {
+				done(err3);
+				return;
+			}
+			cloudCall(site, "moveItem", params, function(err4, r) {
+				if (!err4) {
+					cloudForget(site, from);
+					var e = r.entry || {};
+					site.ids[to] = {loc: String(e.path || e.id || it.loc), d: it.d};
+				}
+				done(err4);
+			});
+		});
+	});
+}
+
+// Off the drive: into the provider's trash where it has one, a folder whole.
+function cloudRemove(site, path, done) {
+	cloudFind(site, path, function(err, it) {
+		if (err) {
+			done(err);
+			return;
+		}
+		cloudCall(site, "deleteItem", {path: it.loc}, function(err2) {
+			if (!err2) {
+				cloudForget(site, path);
+			}
+			done(err2);
+		});
+	});
 }
 
 // ---- work through the TouchPad: between sites, archives on a site, opening ----
