@@ -1,4 +1,5 @@
 {
     "allowedNames": ["com.palm.stark.files.service"],
-    "com.palm.stark.files.service.group": ["oem"]
+    "com.palm.stark.files.service.group": ["oem"],
+    "applicationinstall.interface": ["oem"]
 }
