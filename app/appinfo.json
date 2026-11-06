@@ -9,5 +9,17 @@
 	"splashicon": "images/icon-256x256.png",
 	"uiRevision": 2,
 	"keywords": ["Topaz Explorer", "Files", "Explorer", "Folders", "File Manager"],
-	"requiredPermissions": ["application.launcher", "appmanager.management", "preferences.systempropertyquery"]
+	"requiredPermissions": ["application.launcher", "appmanager.management", "preferences.systempropertyquery"],
+	"mimeTypes": [
+		{"mime": "application/zip", "extension": "zip"},
+		{"mime": "application/x-7z-compressed", "extension": "7z"},
+		{"mime": "application/vnd.rar", "extension": "rar"},
+		{"mime": "application/x-tar", "extension": "tar"},
+		{"mime": "application/gzip", "extension": "gz"},
+		{"mime": "application/x-compressed-tar", "extension": "tgz"},
+		{"mime": "application/x-bzip2", "extension": "bz2"},
+		{"mime": "application/x-bzip-compressed-tar", "extension": "tbz2"},
+		{"mime": "application/x-xz", "extension": "xz"},
+		{"mime": "application/x-xz-compressed-tar", "extension": "txz"}
+	]
 }

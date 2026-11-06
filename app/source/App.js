@@ -232,6 +232,8 @@ enyo.kind({
 
 	// Launched to show a folder: {path: "/media/internal/Photos"} or
 	// {target: "file:///media/internal/Photos"}; {view: "icons"} picks the view.
+	// Launched for a file, as the app for its kind ({target: "file:///media/internal/a.zip"}
+	// for an archive): its folder is shown and the file opened from there.
 	launched: function(params) {
 		if (params.view === "icons" || params.view === "details") {
 			this.$.files.setView(params.view);
@@ -247,14 +249,32 @@ enyo.kind({
 			path = decodeURIComponent(path);
 		} catch (e) {}
 		path = path.replace(/\/+$/, "") || FM.ROOT;
+		var self = this;
 		if (FM.isNet(path)) {
 			// A site address: connect first, then show its folder.
-			var self = this;
 			this.openAddress(path, function(ok) {
 				if (!ok && !self.path) {
 					// Nothing is shown yet: show the storage instead.
 					self.go(FM.ROOT, "start");
 				}
+			});
+			return true;
+		}
+		var slash = path.lastIndexOf("/");
+		if (!this.showFirst && slash >= 0 && path !== FM.ROOT) {
+			// A file or a folder: its parent's listing says which.
+			var parent = path.substring(0, slash) || "/";
+			var name = path.substring(slash + 1);
+			this.$.svc.ask("list", {path: parent}, function(r) {
+				var entries = r.ok ? r.entries : [];
+				for (var i = 0; i < entries.length; i++) {
+					if (entries[i].n === name && !entries[i].d) {
+						self.showFirst = name;
+						self.go(parent);
+						return;
+					}
+				}
+				self.go(path);
 			});
 			return true;
 		}
